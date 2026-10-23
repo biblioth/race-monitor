@@ -122,6 +122,10 @@ class ZuicoolBrandTests(unittest.TestCase):
         html = detail(source['name']).replace('</div>', '<div class="recommendations">赞助商：始祖鸟</div></div>')
         self.assertEqual(inspect(Client({source['url']: html}), source), [])
 
+    def test_unrelated_event_without_year_in_title_is_not_a_brand_failure(self):
+        source = card(name='首届金华山越野赛')
+        self.assertEqual(inspect(Client({source['url']: detail(source['name'])}), source), [])
+
     def test_gear_mentions_are_held_for_review_not_claimed_as_a_cooperation(self):
         source = card(name='2026杭州西山越野赛')
         item = inspect(Client({source['url']: detail(source['name'], '建议穿着凯乐石鞋；越野路线35公里')}), source)[0]

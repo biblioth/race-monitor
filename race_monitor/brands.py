@@ -90,6 +90,10 @@ def inspect(client, card):
         raise ValueError("品牌报名详情缺少独立赛事正文，可能为验证页")
     for node in root.select(".events-list,.recommend,.recommendations,nav,footer,#footer,.floating-guide"):
         node.decompose()
+    # Regional sport listings also contain ordinary events unrelated to either
+    # monitored brand. Their missing edition is not a brand-source failure.
+    if not BRAND.search(root.get_text("\n", strip=True)):
+        return []
     parsed = parse_detail(str(root), url)
     expected_year = re.search(r"20\d{2}", card["name"])
     if expected_year and parsed["edition"] != expected_year[0]:
