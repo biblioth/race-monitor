@@ -97,7 +97,8 @@ class DiscoveryTests(unittest.TestCase):
         message = digest_events([value], NOW, "115/115")[0]["payload"]["message"]
         self.assertIn("🏃 新增活动 1 项", message)
         self.assertIn("截至 2026-11-15 23:59（北京时间）", message)
-        self.assertIn("来源：最酷（品牌关系未独立核实）", message)
+        self.assertIn("来源：最酷\n", message)
+        self.assertNotIn("品牌关系未独立核实", message)
         self.assertEqual(message.count("https://reg.zuicool.com/123"), 1)
         for removed in ["资格要求", "核验时间", "来源覆盖", "待公布 ～ 待公布", "官方原文"]:
             self.assertNotIn(removed, message)

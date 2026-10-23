@@ -208,8 +208,6 @@ def item_text(item):
         source = "来源：最酷"
         if item.get("certification"):
             source += "（A类为目录计划类别，在线更新未核实）" if "计划类别" in item["certification"] else "（A类为平台声明，最终认证未核实）"
-        elif item.get("brand_evidence_kind") in {"platform_title", "platform_series"} or "未独立核实" in item.get("brand", ""):
-            source += "（品牌关系未独立核实）"
         elif item.get("brand_evidence_kind") == "platform_relationship":
             source += "（正文标注品牌合作）"
         lines.append(source)
