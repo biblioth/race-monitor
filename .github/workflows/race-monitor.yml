@@ -105,4 +105,6 @@ jobs:
         env:
           FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
           FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
+          FEISHU_ALERTS_WEBHOOK_URL: ${{ secrets.FEISHU_ALERTS_WEBHOOK_URL }}
+          FEISHU_ALERTS_WEBHOOK_SECRET: ${{ secrets.FEISHU_ALERTS_WEBHOOK_SECRET }}
           GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

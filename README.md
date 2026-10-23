@@ -30,10 +30,10 @@ GitHub 每日 Python 采集（6 个并发请求，单来源最多 3 次尝试）
   → 带赛事专用管理员令牌提交 Cloudflare
   → D1 同一事务保存状态与通知事件（版本号防止并发覆盖）
   → 赛事专用通知队列重试发送
-  → 沿用的飞书机器人
+  → 原飞书机器人＋新增群机器人
 ```
 
-采集运行在本仓库的 GitHub Actions。状态与飞书通知使用独立的 Cloudflare Worker `race-monitor`、D1 `race-monitor`、队列 `race-monitor-notifications` 及死信队列。D1 长期保存去重记录，通知仅发送到既有飞书机器人。Worker 每 5 分钟仅补发待投递消息，赛事采集保持每日一次。
+采集运行在本仓库的 GitHub Actions。状态与飞书通知使用独立的 Cloudflare Worker `race-monitor`、D1 `race-monitor`、队列 `race-monitor-notifications` 及死信队列。D1 长期保存去重记录，通知同时发送到原飞书机器人和新增群机器人，两边独立去重、投递和重试。Worker 每 5 分钟仅补发待投递消息，赛事采集保持每日一次。
 
 港百及其WTM成员页在直连受限时，先尝试官网 HTML 声明的公开 WordPress API。港百和凯乐石还可尝试通过 Worker 读取固定的公开来源。备用接口仅接受预设来源名称，独立管理员令牌只用于访问自己的 Worker，不会转发给赛事官网；港百这些路径仍受限时，使用 GitHub 上的独立 Chromium 匿名读取官方主页和 Entry 页，只在读到当届年份及报名规程时认定成功。不会使用个人浏览器、登录状态或人工验证码方案；全部路径都失败时报告覆盖异常。
 
@@ -94,8 +94,8 @@ npm run check
 
 1. 为本项目配置独立的 D1、通知队列与死信队列，并更新 `cloudflare/wrangler.jsonc` 的资源绑定。
 2. 在 `cloudflare/` 执行 `npx wrangler d1 execute race-monitor --remote --file=./schema.sql`，再执行 `npx wrangler deploy`。
-3. Worker Secrets：`ADMIN_TOKEN`、`FEISHU_WEBHOOK_URL`、`FEISHU_WEBHOOK_SECRET`。管理员令牌为赛事项目独立生成；机器人沿用原设置。
-4. 本仓库 GitHub Secrets：`RACE_MONITOR_ADMIN_TOKEN`（与 Worker 的 `ADMIN_TOKEN` 相同）、`FEISHU_WEBHOOK_URL`、`FEISHU_WEBHOOK_SECRET`。GitHub 飞书配置仅用于整个采集任务失败时的独立告警。
+3. Worker Secrets：`ADMIN_TOKEN`、`FEISHU_WEBHOOK_URL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_ALERTS_WEBHOOK_URL`、`FEISHU_ALERTS_WEBHOOK_SECRET`。管理员令牌为赛事项目独立生成；旧机器人沿用原设置，新增群使用独立 URL 和签名密钥。
+4. 本仓库 GitHub Secrets：`RACE_MONITOR_ADMIN_TOKEN`（与 Worker 的 `ADMIN_TOKEN` 相同）、`FEISHU_WEBHOOK_URL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_ALERTS_WEBHOOK_URL`、`FEISHU_ALERTS_WEBHOOK_SECRET`。GitHub 飞书配置仅用于整个采集任务失败时向两个机器人分别发送告警。
 5. 手动执行 `preview=true` 验证真实来源，再执行正式任务。将仓库变量 `RACE_MONITOR_ENABLED` 设置为 `true` 才会运行定时任务；手动预览不受该开关影响。新迁移必须先导入原去重状态，再启用定时任务。
 
 手动复查：工作流 `refresh=true` 会重查当天来源并沿用 D1 去重，只通知尚未发现的合格项目；不会重新推送已有活动。日常定时任务保持每天一次，09:30 补偿逻辑不变。`preview=true` 优先进入无写入／无通知预览，结合 `refresh=true` 也不会写入状态。
@@ -118,3 +118,5 @@ GitHub Actions 每轮保存来源报告 30 天；D1 长期保留赛事身份、�
 六站点逐项检查与品牌抓取验证记录见 [docs/source-audit-2026-10-23.md](docs/source-audit-2026-10-23.md)。
 
 2026-10-23 后续调整：仅移除始祖鸟官网监控，保留最酷里的始祖鸟检索；朗途切换至中文官网，见 [来源调整记录](docs/source-change-letour-cn.md)。
+
+双机器人：`feishu` 为原机器人，`feishu:alerts` 为新增群机器人。一个新事件为每个机器人创建独立投递记录；一边失败不阻断另一边，成功的一边不会跟着重发。只为后续新事件扇出，不扫描或补发已有历史。相同 Webhook 若重复配置只发送一次。

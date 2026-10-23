@@ -148,3 +148,59 @@ test("the standalone service exposes only race routes and Feishu delivery", asyn
   await assert.rejects(sendEvent(e, event, "pushplus"), /Unsupported/);
   assert.equal((await worker.fetch(new Request("https://worker.test/"), e)).status, 200);
 });
+
+test("both robots receive independent deliveries and one failure never resends the successful robot", async () => {
+  const e = env();
+  e.FEISHU_ALERTS_WEBHOOK_URL = "https://example.com/new-group";
+  const sent = [];
+  e.NOTIFICATION_QUEUE.send = async body => sent.push(body);
+  await commitRaceState(e, { version: 0, state: { known: { one: {} } }, events: [event] });
+  const { enqueuePending } = await import("../src/index.js");
+  assert.equal(await enqueuePending(e), 2);
+  const previousFetch = globalThis.fetch;
+  const calls = [];
+  let recovered = false, retries = 0;
+  globalThis.fetch = async url => { calls.push(url); return Response.json({ code: url.endsWith("new-group") && !recovered ? 19024 : 0 }); };
+  const message = body => ({ body, ack() {}, retry() { retries++; } });
+  try {
+    await worker.queue({ messages: sent.map(message) }, e);
+    const rows = (await e.DB.prepare("SELECT id,channel,status FROM monitor_deliveries ORDER BY id").all()).results;
+    assert.equal(rows.find(r => r.channel === "feishu").status, "delivered");
+    assert.equal(rows.find(r => r.channel === "feishu:alerts").status, "pending");
+    assert.equal(retries, 1);
+    recovered = true;
+    await worker.queue({ messages: [message({ deliveryId: rows.find(r => r.channel === "feishu:alerts").id })] }, e);
+    await worker.queue({ messages: sent.map(message) }, e);
+    assert.equal(calls.filter(u => u === e.FEISHU_WEBHOOK_URL).length, 1);
+    assert.equal(calls.filter(u => u === e.FEISHU_ALERTS_WEBHOOK_URL).length, 2);
+    assert.equal((await e.DB.prepare("SELECT COUNT(*) AS n FROM monitor_deliveries WHERE status='delivered'").first()).n, 2);
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test("each robot uses its own URL and signing secret; duplicate URLs do not double-send", async () => {
+  const { configuredChannels } = await import("../src/notifications.js");
+  const { createHmac } = await import("node:crypto");
+  const e = { ...env(), FEISHU_WEBHOOK_SECRET: "old-secret", FEISHU_ALERTS_WEBHOOK_URL: "https://example.com/new-group", FEISHU_ALERTS_WEBHOOK_SECRET: "new-secret" };
+  assert.deepEqual(configuredChannels(e), ["feishu", "feishu:alerts"]);
+  for (const channel of configuredChannels(e)) {
+    await sendEvent(e, event, channel, async (url, options) => {
+      const payload = JSON.parse(options.body);
+      const extra = channel === "feishu:alerts";
+      assert.equal(url, extra ? e.FEISHU_ALERTS_WEBHOOK_URL : e.FEISHU_WEBHOOK_URL);
+      const secret = extra ? e.FEISHU_ALERTS_WEBHOOK_SECRET : e.FEISHU_WEBHOOK_SECRET;
+      assert.equal(payload.sign, createHmac("sha256", `${payload.timestamp}\n${secret}`).update("").digest("base64"));
+      return Response.json({ code: 0 });
+    });
+  }
+  assert.deepEqual(configuredChannels({ ...e, FEISHU_ALERTS_WEBHOOK_URL: e.FEISHU_WEBHOOK_URL }), ["feishu"]);
+});
+
+test("enabling a second robot never backfills historical events", async () => {
+  const e = env();
+  await commitRaceState(e, { version: 0, state: {}, events: [event] });
+  e.FEISHU_ALERTS_WEBHOOK_URL = "https://example.com/new-group";
+  await commitRaceState(e, { version: 1, state: {}, events: [] });
+  assert.equal((await e.DB.prepare("SELECT COUNT(*) AS n FROM monitor_deliveries").first()).n, 1);
+  await commitRaceState(e, { version: 2, state: {}, events: [{ ...event, key: "races:digest:new-after-second-robot" }] });
+  assert.equal((await e.DB.prepare("SELECT COUNT(*) AS n FROM monitor_deliveries").first()).n, 3);
+});

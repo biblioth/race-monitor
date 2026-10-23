@@ -1,4 +1,5 @@
 import { renderRaceMessage } from "./race-messages.js";
+import { configuredChannels } from "./notifications.js";
 
 const TYPES = new Set(["race_digest", "race_wtm_asia", "race_source_degraded", "race_source_recovered", "race_migration_completed"]);
 const PUBLIC_SOURCES = {
@@ -44,7 +45,8 @@ export function validateRaceCommit(body) {
 
 export async function commitRaceState(env, body) {
   validateRaceCommit(body);
-  if (!env.FEISHU_WEBHOOK_URL) throw new Error("Feishu is not configured");
+  const channels = configuredChannels(env);
+  if (!channels.length) throw new Error("Feishu is not configured");
   const at = new Date().toISOString();
   const commit = crypto.randomUUID();
   const next = body.version + 1;
@@ -57,9 +59,11 @@ export async function commitRaceState(env, body) {
     statements.push(env.DB.prepare(`INSERT OR IGNORE INTO monitor_events(idempotency_key, event_type, payload_json, created_at)
       SELECT ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM race_monitor_state WHERE id=1 AND commit_id=?)`)
       .bind(event.key, event.type, JSON.stringify(event.payload), at, commit));
-    statements.push(env.DB.prepare(`INSERT OR IGNORE INTO monitor_deliveries(event_id, channel, status, created_at, updated_at)
-      SELECT id, 'feishu', 'pending', ?, ? FROM monitor_events WHERE idempotency_key=?
-      AND EXISTS (SELECT 1 FROM race_monitor_state WHERE id=1 AND commit_id=?)`).bind(at, at, event.key, commit));
+    for (const channel of channels) {
+      statements.push(env.DB.prepare(`INSERT OR IGNORE INTO monitor_deliveries(event_id, channel, status, created_at, updated_at)
+        SELECT id, ?, 'pending', ?, ? FROM monitor_events WHERE idempotency_key=?
+        AND EXISTS (SELECT 1 FROM race_monitor_state WHERE id=1 AND commit_id=?)`).bind(channel, at, at, event.key, commit));
+    }
   }
   const results = await env.DB.batch(statements);
   if (!results[1]?.meta?.changes) return { conflict: true };
@@ -77,8 +81,9 @@ export async function raceHealthResponse(env) {
   const failed = Object.entries(state.sources || {}).filter(([, x]) => !x.ok).map(([name, x]) => ({ name, error: x.error }));
   const scheduleOk = age !== null && age >= 0 && age < 26 * 3600_000;
   const deliveryOk = !pending?.oldest || now - Date.parse(pending.oldest) < 30 * 60_000;
-  const ok = scheduleOk && deliveryOk && failed.length === 0 && Boolean(env.FEISHU_WEBHOOK_URL);
+  const channels = configuredChannels(env);
+  const ok = scheduleOk && deliveryOk && failed.length === 0 && channels.length > 0;
   return Response.json({ ok, scheduleOk, deliveryOk, lastCompletedAt: completedAt, runDate: state.last_run_date || null,
     knownEvents: Object.keys(state.known || {}).length, sources: { total: Object.keys(state.sources || {}).length, failed },
-    gaps: state.gaps || [], pendingNotifications: Number(pending?.count || 0) }, { status: ok ? 200 : 503 });
+    gaps: state.gaps || [], channels, pendingNotifications: Number(pending?.count || 0) }, { status: ok ? 200 : 503 });
 }

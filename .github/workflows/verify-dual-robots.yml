@@ -1,0 +1,42 @@
+name: Verify both configured race robots
+on: workflow_dispatch
+permissions:
+  contents: read
+concurrency:
+  group: daily-race-monitor
+  cancel-in-progress: false
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Enqueue one test event for both robots
+        env:
+          ADMIN_TOKEN: ${{ secrets.RACE_MONITOR_ADMIN_TOKEN }}
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          FEISHU_ALERTS_WEBHOOK_URL: ${{ secrets.FEISHU_ALERTS_WEBHOOK_URL }}
+          FEISHU_ALERTS_WEBHOOK_SECRET: ${{ secrets.FEISHU_ALERTS_WEBHOOK_SECRET }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request
+          def call(path, body=None):
+              headers = {"User-Agent": "python-requests/2.32.5", "Content-Type": "application/json", "Authorization": "Bearer " + os.environ["ADMIN_TOKEN"]}
+              request = urllib.request.Request("https://race-monitor.spicyao-lakewatch.workers.dev" + path, data=json.dumps(body, ensure_ascii=False).encode() if body is not None else None, headers=headers)
+              with urllib.request.urlopen(request, timeout=40) as response:
+                  return json.load(response)
+          try:
+              assert os.environ["FEISHU_WEBHOOK_URL"] and os.environ["FEISHU_ALERTS_WEBHOOK_URL"] and os.environ["FEISHU_ALERTS_WEBHOOK_SECRET"]
+              assert os.environ["FEISHU_WEBHOOK_URL"] != os.environ["FEISHU_ALERTS_WEBHOOK_URL"]
+              health = call("/races/health")
+              assert set(health["channels"]) == {"feishu", "feishu:alerts"}
+              before = call("/races/state")
+              key = "races:test:dual-robots:" + os.environ["RUN_ID"]
+              message = "✅ 赛事监控双机器人测试\n这条消息同时发送到原群和新增群。\n今后的新增赛事／活动会同步推送，已提醒的历史项目不重复发送。"
+              result = call("/races/commit", {"version": before["version"], "state": before["state"], "events": [{"key": key, "type": "race_digest", "payload": {"message": message}}]})
+              after = call("/races/state")
+              assert after["state"] == before["state"]
+              print(json.dumps({"test_key": key, "robot_count": 2, "queued": result.get("queued"), "known": len(after["state"].get("known", {})), "state_preserved": True}))
+          except Exception as error:
+              raise SystemExit("Dual robot check failed: " + type(error).__name__) from None
+          PY

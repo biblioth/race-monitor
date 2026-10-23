@@ -2,6 +2,13 @@ import { renderRaceMessage } from "./race-messages.js";
 
 export const renderEvent = renderRaceMessage;
 
+export function configuredChannels(env) {
+  const channels = [];
+  if (env.FEISHU_WEBHOOK_URL) channels.push("feishu");
+  if (env.FEISHU_ALERTS_WEBHOOK_URL && env.FEISHU_ALERTS_WEBHOOK_URL !== env.FEISHU_WEBHOOK_URL) channels.push("feishu:alerts");
+  return channels;
+}
+
 async function feishuSignature(secret, timestamp) {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -32,7 +39,8 @@ async function sendFeishu(env, message, fetcher) {
 }
 
 export async function sendEvent(env, event, channel, fetcher = fetch) {
-  if (channel !== "feishu") throw new Error("Unsupported notification channel");
-  if (!env.FEISHU_WEBHOOK_URL) throw new Error("Feishu is not configured");
-  return sendFeishu(env, renderRaceMessage(event).message, fetcher);
+  if (!["feishu", "feishu:alerts"].includes(channel)) throw new Error("Unsupported notification channel");
+  const target = channel === "feishu:alerts" ? { FEISHU_WEBHOOK_URL: env.FEISHU_ALERTS_WEBHOOK_URL, FEISHU_WEBHOOK_SECRET: env.FEISHU_ALERTS_WEBHOOK_SECRET } : env;
+  if (!target.FEISHU_WEBHOOK_URL) throw new Error("Feishu is not configured");
+  return sendFeishu(target, renderRaceMessage(event).message, fetcher);
 }

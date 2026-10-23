@@ -98,30 +98,40 @@ def execute(store, now, collector=collect, refresh=False):
 
 
 def notify_failure():
-    """Independent GitHub fallback, using only the existing Feishu secrets."""
+    """Notify each configured robot independently if the collector fails."""
     import base64
     import hmac
     import time
-    url = os.environ.get("FEISHU_WEBHOOK_URL")
-    if not url:
-        raise RuntimeError("原飞书机器人 Secret 未配置")
-    payload = {"msg_type": "text", "content": {"text": "⚠️ 赛事监控任务未正常完成\n每日采集或状态保存失败，部分新增可能延迟发现。\n请查看 GitHub Actions：" + os.environ.get("GITHUB_RUN_URL", "https://github.com/biblioth/race-monitor/actions")}}
-    secret = os.environ.get("FEISHU_WEBHOOK_SECRET")
-    if secret:
-        t = str(int(time.time()))
-        payload.update(timestamp=t, sign=base64.b64encode(hmac.new(f"{t}\n{secret}".encode(), digestmod=hashlib.sha256).digest()).decode())
-    for attempt in range(3):
-        try:
-            r = requests.post(url, json=payload, timeout=20)
-            r.raise_for_status()
-            value = r.json()
-            if value.get("code", value.get("StatusCode", -1)) not in (0, "0"):
-                raise RuntimeError("飞书机器人拒绝故障通知")
-            return
-        except (requests.RequestException, ValueError, RuntimeError):
-            if attempt == 2:
-                raise RuntimeError("飞书故障通知投递失败（未输出凭据）") from None
-            time.sleep(2 ** attempt)
+    targets = []
+    seen = set()
+    for prefix in ["FEISHU", "FEISHU_ALERTS"]:
+        url = os.environ.get(prefix + "_WEBHOOK_URL")
+        if url and url not in seen:
+            targets.append((prefix, url, os.environ.get(prefix + "_WEBHOOK_SECRET")))
+            seen.add(url)
+    if not targets:
+        raise RuntimeError("飞书机器人 Secret 未配置")
+    failed = []
+    for name, url, secret in targets:
+        for attempt in range(3):
+            payload = {"msg_type": "text", "content": {"text": "⚠️ 赛事监控任务未正常完成\n每日采集或状态保存失败，部分新增可能延迟发现。\n请查看 GitHub Actions：" + os.environ.get("GITHUB_RUN_URL", "https://github.com/biblioth/race-monitor/actions")}}
+            if secret:
+                t = str(int(time.time()))
+                payload.update(timestamp=t, sign=base64.b64encode(hmac.new(f"{t}\n{secret}".encode(), digestmod=hashlib.sha256).digest()).decode())
+            try:
+                r = requests.post(url, json=payload, timeout=20)
+                r.raise_for_status()
+                value = r.json()
+                if value.get("code", value.get("StatusCode", -1)) not in (0, "0"):
+                    raise RuntimeError("飞书机器人拒绝故障通知")
+                break
+            except (requests.RequestException, ValueError, RuntimeError):
+                if attempt == 2:
+                    failed.append(name)
+                else:
+                    time.sleep(2 ** attempt)
+    if failed:
+        raise RuntimeError("飞书故障通知投递失败：" + "、".join(failed)) from None
 
 
 def main(argv=None):
