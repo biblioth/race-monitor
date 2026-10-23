@@ -4,7 +4,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from race_monitor.brands import BASE, KEYWORDS, discover, inspect
 from race_monitor.core import CST, merge_discoveries, item_text
-from race_monitor.sources import SourceError, arc_items, zui_cards, brand_article_items, article_dates
+from race_monitor.sources import SourceError, zui_cards
 
 NOW = datetime(2026, 10, 23, 9, tzinfo=CST)
 
@@ -181,35 +181,6 @@ class DedupTests(unittest.TestCase):
         self.assertEqual(len(merge_discoveries({}, [first, second], NOW)), 2)
         alias = dict(first, id='alias', official='https://organizer.example/event?utm_source=zuicool&id=1')
         self.assertEqual(len(merge_discoveries({}, [first, alias], NOW)), 1)
-
-
-class LetourTests(unittest.TestCase):
-    def test_current_english_site_dates_are_read_without_inventing_open_registration(self):
-        url = 'https://www.letoursports.net/10th-mogan'
-        pages = {'https://www.letoursports.net/': '<a href="/10th-mogan">DISCOVER</a>',
-                 url: '<title>10th Mogan | Letour</title><main><p>KAILAS FUGA MOGAN MOUNTAIN RUNNING RACE</p><p>DATE | October 23 - 25, 2026</p><p>LOCATION | : Mogan shan, Huzhou, China</p></main>'}
-        values = brand_article_items(Client(pages), 'https://www.letoursports.net/', '凯乐石合作赛事', 'letour')
-        self.assertEqual(len(values), 1)
-        self.assertEqual(values[0]['date'], '2026-10-23')
-        self.assertEqual(values[0]['date_end'], '2026-10-25')
-        self.assertFalse(values[0]['verified'])
-        self.assertEqual(values[0]['status'], 'unknown')
-        pages[url] = pages[url].replace('</main>', '<a href="https://reg.zuicool.com/123">Register Now</a></main>')
-        values = brand_article_items(Client(pages), 'https://www.letoursports.net/', '凯乐石合作赛事', 'letour')
-        self.assertTrue(values[0]['verified'])
-        self.assertEqual(values[0]['registration'], BASE+'123')
-        self.assertEqual(article_dates('October 23 - 99, 2026'), [])
-
-
-class ArcteryxFreshnessTests(unittest.TestCase):
-    def test_last_years_static_courses_are_a_coverage_gap(self):
-        pages = {'https://arcteryx.com/cn/mountainClassroom': '<script src="/cn/_nuxt/runtime.test.js"></script>',
-                 'https://arcteryx.com/cn/_nuxt/runtime.test.js': '({1:"pages/mountainClassroom/index"});({1:"abcdef12"})',
-                 'https://arcteryx.com/cn/_nuxt/pages/mountainClassroom/index.abcdef12.js': 'P63187_course:{id:1,title:"上海攀岩课",eventstarttime:"2025年12月26日",eventlocation:"上海"}'}
-        with self.assertRaisesRegex(SourceError, '最新可读日期：2025-12-26'):
-            arc_items(Client(pages), NOW)
-        pages['https://arcteryx.com/cn/_nuxt/pages/mountainClassroom/index.abcdef12.js'] = pages['https://arcteryx.com/cn/_nuxt/pages/mountainClassroom/index.abcdef12.js'].replace('2025年', '2026年')
-        self.assertEqual(len(arc_items(Client(pages), NOW)), 1)
 
 
 if __name__ == '__main__':

@@ -10,7 +10,7 @@ from race_monitor.core import CST, digest_events, merge_discoveries, member_even
 from race_monitor import sources as source_module
 from race_monitor.catalog import cached_directory, certification, validate_snapshot, SNAPSHOT
 from race_monitor.service import execute, plan
-from race_monitor.sources import Client, utmb_index, utmb_event, next_data, wtm_members, directory_rows, match_directory, arcteryx_records, zui_cards, SourceError
+from race_monitor.sources import Client, utmb_index, utmb_event, next_data, wtm_members, directory_rows, match_directory, zui_cards, SourceError
 
 NOW = datetime(2026, 10, 22, 9, tzinfo=CST)
 
@@ -134,13 +134,15 @@ class SourceTests(unittest.TestCase):
                 calls.append((url, binary))
                 return "unused fixture"
         with ExitStack() as stack:
-            for name in ["utmb_index", "zui_cards", "member_catalog", "fuji_items", "hk_items", "arc_items", "brand_article_items"]:
+            for name in ["utmb_index", "zui_cards", "member_catalog", "fuji_items", "hk_items", "letour_items"]:
                 stack.enter_context(patch.object(source_module, name, return_value=[]))
             stack.enter_context(patch.object(source_module, "marathon_catalog", return_value=([], {"catalog_pages": 1})))
             collected = source_module.collect(NOW, Client())
         self.assertEqual(collected["registry_count"], 489)
         self.assertFalse(any(binary or url.endswith(".pdf") or url == "https://inview.run/" for url, binary in calls))
         self.assertFalse(any(k.startswith("caa:directory:") for k in collected["sources"]))
+        self.assertNotIn("brand:arcteryx", collected["sources"])
+        self.assertFalse(any("arcteryx.com" in url for url, _ in calls))
         self.assertNotIn("brand:kailas", collected["sources"])
         self.assertIn("brand:kailas", collected["paused_sources"])
 
@@ -153,7 +155,7 @@ class SourceTests(unittest.TestCase):
             def get(self, *args, **kwargs):
                 return "unused fixture"
         with ExitStack() as stack:
-            for name in ["member_catalog", "fuji_items", "hk_items", "arc_items", "brand_article_items"]:
+            for name in ["member_catalog", "fuji_items", "hk_items", "letour_items"]:
                 stack.enter_context(patch.object(source_module, name, return_value=[]))
             stack.enter_context(patch.object(source_module, "utmb_index", return_value=events))
             stack.enter_context(patch.object(source_module, "zui_cards", return_value=cards))
@@ -193,15 +195,6 @@ class SourceTests(unittest.TestCase):
     def test_directory_rejects_challenge_page_disguised_as_success(self):
         with self.assertRaises(SourceError):
             directory_rows(b"<html>challenge</html>", "https://example.com/list.pdf")
-
-    def test_arcteryx_data_is_parsed_without_executing_javascript(self):
-        code = 'ignore();var a=[{P63187_campaigndetail:{id:123,title:"上海攀岩",describe:"a } brace !0",hiddenTitle:!0,eventlocation:"上海"}}];'
-        record = arcteryx_records(code)[0]
-        self.assertEqual(record["id"], 123)
-        self.assertTrue(record["hiddenTitle"])
-        self.assertIn("!0", record["describe"])
-        with self.assertRaises(SourceError):
-            arcteryx_records('P63187_campaigndetail:{id:run_untrusted_code()}')
 
     def test_zui_empty_or_login_page_is_not_successful_no_news(self):
         with self.assertRaises(SourceError):

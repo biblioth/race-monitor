@@ -12,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urljoin, urlsplit
 
-import json5
 import requests
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
@@ -21,6 +20,7 @@ from .core import CST, clean, eligible, in_scope, normalized_name, safe_url, sta
 from .catalog import cached_directory, certification
 from .browser import hk_browser_pages
 from .brands import discover as brand_catalog, inspect as brand_detail
+from .letour import collect as letour_items
 from .marathons import discover as marathon_catalog, candidates as marathon_candidates, inspect as marathon_detail
 
 UTMB_URL = "https://utmb.world/en/utmb-world-series-events"
@@ -403,160 +403,6 @@ def zui_detail(client, card):
     return brand_detail(client, card)
 
 
-def balanced_object(text, start):
-    depth, quote, escaped = 0, None, False
-    for i in range(start, len(text)):
-        char = text[i]
-        if quote:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == quote:
-                quote = None
-        elif char in {"'", '"'}:
-            quote = char
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start:i + 1]
-    raise SourceError("品牌静态数据对象不完整")
-
-
-def arcteryx_records(code):
-    records = []
-    for m in re.finditer(r"P63187_\w+:\s*(?=\{)", code):
-        try:
-            raw = balanced_object(code, m.end())
-            # Minified JavaScript booleans are literals, but not JSON5. Translate
-            # only outside strings; never execute scripts from an external site.
-            chars, quote, escaped, i = [], None, False, 0
-            while i < len(raw):
-                char = raw[i]
-                if quote:
-                    if escaped:
-                        escaped = False
-                    elif char == "\\":
-                        escaped = True
-                    elif char == quote:
-                        quote = None
-                elif char in {"'", '"'}:
-                    quote = char
-                elif raw[i:i + 2] in {"!0", "!1"}:
-                    chars.append("true" if raw[i + 1] == "0" else "false")
-                    i += 2
-                    continue
-                chars.append(char)
-                i += 1
-            records.append(json5.loads("".join(chars)))
-        except ValueError:
-            raise SourceError("始祖鸟公开活动数据格式已变化") from None
-    return records
-
-
-def arc_items(client, now=None):
-    now = now or datetime.now(CST)
-    base = "https://arcteryx.com/cn/"
-    page = BeautifulSoup(client.get(urljoin(base, "mountainClassroom")), "html.parser")
-    runtime_url = next((urljoin(base, a["src"]) for a in page.select("script[src]") if "/runtime." in a["src"]), None)
-    if not runtime_url:
-        raise SourceError("始祖鸟公开网页缺少运行资源索引")
-    runtime = client.get(runtime_url)
-    # Resolve the currently published chunk names/hashes, never hardcode build IDs.
-    names = dict(re.findall(r'(\d+):"((?:common\.|pages/|components/)[^"\n]+)"', runtime))
-    maps = re.findall(r'\{((?:\d+:"[a-z0-9]+",?)+)\}', runtime)
-    hashes = dict(re.findall(r'(\d+):"([a-f0-9]{7,})"', maps[-1])) if maps else {}
-    code = []
-    for key, name in names.items():
-        if (name.startswith("common.pages/brandActivities/") or name == "pages/mountainClassroom/index") and key in hashes:
-            code.append(client.get(urljoin(base, f"_nuxt/{name}.{hashes[key]}.js")))
-    records = [r for js in code for r in arcteryx_records(js)]
-    if not records:
-        raise SourceError("始祖鸟公开数据未读到活动；小程序不在当前覆盖范围")
-    dated = [date for r in records for date in chinese_dates(clean(r.get("eventstarttime")))]
-    if not dated or max(dated)[:4] < str(now.year):
-        latest = max(dated) if dated else "未读到活动日期"
-        raise SourceError(f"官网可访问，但山地课堂未读到当年活动（最新可读日期：{latest}）；会员小程序尚未接入")
-    items = []
-    for r in records:
-        summary = clean(" ".join(str(r.get(k, "")) for k in ["title", "describe", "eventstarttime", "eventendtime", "eventlocation", "content"]))
-        location = clean(r.get("eventlocation"))
-        if not SPORT.search(summary) or not REGION.search(location):
-            continue
-        dates = chinese_dates(clean(r.get("eventstarttime")))
-        if not dates:
-            # Do not treat the CMS creation date as the activity date.
-            continue
-        url = urljoin(base, f"mountainClassroomDetails/{r['id']}/")
-        items.append({"id": f"brand:arc:{r['id']}:{dates[0][:4]}", "edition": dates[0][:4], "name": clean(r.get("title")),
-                      "date": dates[0], "location": location, "category": "brand", "status": "preview", "official": url,
-                      "entry_path": "始祖鸟会员中心小程序 → 山地课堂（以当期公告为准）", "brand": "始祖鸟官方山地课堂",
-                      "source": urljoin(base, "mountainClassroom"), "verified": True, "in_region": True, "priority": 0})
-    return items
-
-
-def brand_article_items(client, index_url, brand, mode):
-    s = soup(client.get(index_url))
-    links = {}
-    for a in s.select("a[href]"):
-        url = safe_url(urljoin(index_url, a["href"]))
-        title = clean(a.get_text(" ", strip=True))
-        if not url or urlsplit(url).hostname != urlsplit(index_url).hostname:
-            continue
-        if mode == "letour" and title == "DISCOVER":
-            links[url] = title
-        elif mode == "kailas" and re.search(r"BrandNews|detail", url, re.I) and SPORT.search(title):
-            links[url] = title
-    if mode == "letour" and not links:
-        raise SourceError("朗途官网未读到赛事链接")
-    if mode == "kailas" and "品牌新闻" not in s.get_text():
-        raise SourceError("凯乐石新闻目录结构已变化")
-    items = []
-    for url, title in links.items():
-        body = soup(client.get(url))
-        own = body.select_one("main") or body
-        text = own.get_text(" ", strip=True)
-        if not SPORT.search(text):
-            continue
-        # Restrict region evidence to an explicit location field, not footer/store names.
-        fields = own.get_text("\n", strip=True)
-        place = re.search(r"(?:赛事地点|活动地点|比赛地点|地点|Location)\s*[|：:]+\s*:?\s*([^。\n]{2,100})", fields, re.I)
-        location = clean(place[1]) if place else ""
-        if not REGION.search(location):
-            continue
-        date_field = re.search(r"(?:活动时间|比赛时间|赛事日期|Date)\s*[|：:]+\s*([^。\n]{5,100})", fields, re.I)
-        dates = article_dates(date_field[1]) if date_field else []
-        if not dates:
-            continue
-        heading = own.select_one("h1")
-        name = clean(heading.get_text(" ", strip=True)) if heading else clean(body.title.get_text().split("|")[0]) if body.title else title
-        entry = next((safe_url(urljoin(url, a["href"])) for a in own.select("a[href]") if re.search(r"^(?:报名|立即报名|Register(?: now)?|Enter(?: now)?|Entry)$", clean(a.get_text()), re.I)), "")
-        announced = bool(re.search(r"报名(?:时间|开启|将于)|registration opens|entries open", text, re.I))
-        brand_proof = bool(re.search(r"凯乐石|KAILAS|始祖鸟|ARC.?TERYX", text, re.I))
-        verified = bool(entry or announced) and brand_proof
-        items.append({"id": f"brand:{mode}:{urlsplit(url).path}:{dates[0][:4]}", "edition": dates[0][:4], "name": name,
-                      "date": dates[0], "date_end": dates[-1], "location": location, "groups": "请查看活动规程", "category": "brand", "status": "open" if entry else "preview" if announced else "unknown",
-                      "official": url, "source": index_url, "brand": brand if brand_proof else "品牌关系待核验", "registration": entry or url,
-                      "verified": verified, "reason": "" if verified else "报名入口／预告或当届品牌关系尚未读到，暂不推送", "in_region": True, "priority": 1})
-    return items
-
-
-def article_dates(text):
-    dates = chinese_dates(text)
-    if dates:
-        return dates
-    match = re.search(r"\b([A-Za-z]+)\.?\s+(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?,?\s+(20\d{2})\b", text)
-    if match:
-        for fmt in ["%B %d %Y", "%b %d %Y"]:
-            try:
-                return [datetime.strptime(f"{match[1]} {day} {match[4]}", fmt).date().isoformat() for day in [match[2], match[3] or match[2]]]
-            except ValueError:
-                pass
-    return []
-
-
 def collect(now, client=None, directory_cache=None):
     client = client or Client()
     directory_cache = dict(directory_cache or {})
@@ -576,8 +422,7 @@ def collect(now, client=None, directory_cache=None):
         if in_scope(dict(event, category="utmb")) and event.get("dateEnd", event["dateBegin"]) >= now.date().isoformat():
             tasks.append((f"utmb:{event['tenant']}", lambda e=event: utmb_event(client, e)))
     tasks.extend([("wtm:fuji", lambda: fuji_items(client)), ("wtm:hk100", lambda: hk_items(client)),
-                  ("brand:arcteryx", lambda: arc_items(client, now)),
-                  ("brand:letour", lambda: brand_article_items(client, "https://www.letoursports.net/", "凯乐石合作赛事（朗途官方发布）", "letour"))])
+                  ("brand:letour", lambda: letour_items(client, now, run))])
     m = run("wtm:members", lambda: member_catalog(client))
     members.extend(m or [])
     # Annual catalog facts are optional evidence. Daily discovery never waits
@@ -623,4 +468,4 @@ def collect(now, client=None, directory_cache=None):
                        notify_eligible=sum(eligible(x, now) for x in brand_checks), detail_failures=len(brand_cards) - brand_stats["details_read"])
     return {"items": items, "members": members, "sources": reports, "marathon_coverage": marathon_stats, "brand_coverage": brand_stats, "directory_cache": directory_cache, "registry_count": len(registry), "a_class_count": sum(r["category"] == "A" for r in registry),
             "paused_sources": {"brand:kailas": {"since": "2026-10-23", "reason": "官网云端405，按用户选择暂用朗途／最酷补漏"}},
-            "review_leads": leads, "gaps": ["凯乐石官网暂停采集，暂用朗途／最酷补漏，官网独有活动可能遗漏", "品牌会员小程序、微信群及仅图片发布的招募尚未接入；始祖鸟官网历史内容不代表当期活动已覆盖", "马拉松发现以最酷列表及分页为主，平台未收录、仅海报信息及待核验A类条目可能漏检或延迟", "WTM总站受限时使用港百／环富士山官方成员清单，成员同步可能延迟"]}
+            "review_leads": leads, "gaps": ["凯乐石官网暂停采集，暂用朗途／最酷补漏，官网独有活动可能遗漏", "品牌会员小程序、微信群及仅图片发布的招募尚未接入；始祖鸟仅通过最酷补充发现，官网已按用户要求移除", "马拉松发现以最酷列表及分页为主，平台未收录、仅海报信息及待核验A类条目可能漏检或延迟", "WTM总站受限时使用港百／环富士山官方成员清单，成员同步可能延迟"]}
