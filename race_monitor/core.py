@@ -174,24 +174,47 @@ def merge_discoveries(state, items, now):
 
 
 def item_text(item):
-    labels = {"open": "报名中", "preview": "报名预告", "announced": "报名公告已发布（当前状态请查看原文）", "ballot": "抽签登记", "charity": "慈善名额入口（实际余位未核实）"}
+    labels = {"open": "报名中", "preview": "报名预告", "announced": "报名公告已发布，状态见原文", "ballot": "抽签登记", "charity": "慈善名额入口（余位未核实）"}
+    date = display_time(item.get("date"))
+    if item.get("date_end") and item["date_end"] != item.get("date"):
+        date += " ～ " + display_time(item["date_end"])
     lines = [f"🆕 {clean(item['name'])}", f"分类：{CATEGORIES[item['category']]}",
-             f"地点：{clean(item.get('location')) or '待公布'}｜活动日期：{display_time(item.get('date'))}",
-             f"项目／组别：{clean(item.get('groups')) or '待公布'}",
-             f"报名状态：{labels.get(item.get('status'), '待公布')}",
-             "报名时间：按组别列示（时刻为北京时间；仅日期另注明原时区）" if item.get("registration_windows") else f"报名时间：{display_time(item.get('opens'))} ～ {display_time(item.get('closes'))}（北京时间）",
-             f"报名方式：{clean(item.get('method')) or '待公布'}｜费用：{clean(item.get('fee')) or '待公布'}",
-             f"资格要求：{clean(item.get('qualification')) or '请查看官方规程'}"]
-    for window in item.get("registration_windows", []):
-        lines.append(f"{clean(window['label'])}：{display_time(window.get('opens'))} ～ {display_time(window.get('closes'))}")
-    for key, label in [("brand", "品牌关系"), ("certification", "A类依据")]:
-        if item.get(key):
-            lines.append(f"{label}：{clean(item[key])}")
-    source_label = "信息原文（最酷）" if urlsplit(safe_url(item.get("official"))).hostname in {"zuicool.com", "reg.zuicool.com"} else "官方原文"
-    lines.extend([f"报名入口：{safe_url(item.get('registration')) or clean(item.get('entry_path')) or '待公布，请查看信息原文'}",
-                  f"{source_label}：{safe_url(item.get('official')) or safe_url(item.get('source'))}"])
-    if item.get("evidence") and item["evidence"] != item.get("official"):
-        lines.append(f"核验依据：{safe_url(item['evidence'])}")
+             f"{date}｜{clean(item.get('location')) or '地点待公布'}"]
+    groups = clean(item.get("groups"))
+    if groups and groups != "请查看活动规程":
+        lines.append("项目：" + (groups if len(groups) <= 120 else groups[:120] + "…（完整组别见入口）"))
+    status = labels.get(item.get("status"), "待公布")
+    if "抽签" in clean(item.get("method")) and item.get("status") != "ballot":
+        status += "｜抽签／先到先得（分组别）" if "先到先得" in item["method"] else "｜抽签"
+    opens, closes = item.get("opens"), item.get("closes")
+    windows = item.get("registration_windows") or []
+    if not windows:
+        if opens and closes:
+            status += f"｜{display_time(opens)} ～ {display_time(closes)}"
+        elif closes:
+            status += f"｜截至 {display_time(closes)}"
+        elif opens:
+            status += f"｜{display_time(opens)} 起"
+        if any(stamp(value) and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(value)) for value in [opens, closes]):
+            status += "（北京时间）"
+    lines.append("报名：" + status)
+    for window in windows:
+        suffix = "（北京时间）" if any(stamp(window.get(k)) and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(window.get(k))) for k in ["opens", "closes"]) else ""
+        lines.append(f"{clean(window['label'])}：{display_time(window.get('opens'))} ～ {display_time(window.get('closes'))}{suffix}")
+    if item.get("fee"):
+        lines.append("费用：" + clean(item["fee"]))
+    host = urlsplit(safe_url(item.get("official"))).hostname or ""
+    if host in {"zuicool.com", "reg.zuicool.com"}:
+        source = "来源：最酷"
+        if item.get("certification"):
+            source += "（A类为目录计划类别，在线更新未核实）" if "计划类别" in item["certification"] else "（A类为平台声明，最终认证未核实）"
+        elif item.get("brand_evidence_kind") in {"platform_title", "platform_series"} or "未独立核实" in item.get("brand", ""):
+            source += "（品牌关系未独立核实）"
+        elif item.get("brand_evidence_kind") == "platform_relationship":
+            source += "（正文标注品牌合作）"
+        lines.append(source)
+    entry = safe_url(item.get("registration")) or clean(item.get("entry_path")) or safe_url(item.get("official")) or safe_url(item.get("source"))
+    lines.append("入口：" + (entry or "待公布"))
     return "\n".join(lines)
 
 
@@ -209,8 +232,10 @@ def digest_events(items, now, coverage, max_bytes=15000):
         chunks.append(blocks)
     events = []
     for index, blocks in enumerate(chunks, 1):
-        header = f"🏃 发现新的赛事与户外活动｜{now:%Y-%m-%d}\n本次新增 {len(items)} 项（{index}/{len(chunks)}）"
-        text = header + "\n\n" + "\n\n".join(blocks) + f"\n\n核验时间：{now:%Y-%m-%d %H:%M}（北京时间）\n来源覆盖：{coverage}"
+        header = f"🏃 新增活动 {len(items)} 项｜{now:%Y-%m-%d}"
+        if len(chunks) > 1:
+            header += f"（{index}/{len(chunks)}）"
+        text = header + "\n\n" + "\n\n".join(blocks)
         fingerprint = hashlib.sha256(text.encode()).hexdigest()[:24]
         events.append({"key": f"races:digest:{fingerprint}", "type": "race_digest", "payload": {"message": text}})
     return events

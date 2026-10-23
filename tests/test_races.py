@@ -91,6 +91,17 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(display_time("2026-11-02"), "2026-11-02")
         self.assertEqual(display_time(None), "待公布")
 
+    def test_compact_digest_keeps_entry_deadline_and_source_qualification(self):
+        value = item(category="brand", in_region=True, name="2027凯乐石越野赛", groups="20K／10K", closes="2026-11-15T23:59:00+08:00",
+                     official="https://reg.zuicool.com/123", registration="https://reg.zuicool.com/123", brand_evidence_kind="platform_title")
+        message = digest_events([value], NOW, "115/115")[0]["payload"]["message"]
+        self.assertIn("🏃 新增活动 1 项", message)
+        self.assertIn("截至 2026-11-15 23:59（北京时间）", message)
+        self.assertIn("来源：最酷（品牌关系未独立核实）", message)
+        self.assertEqual(message.count("https://reg.zuicool.com/123"), 1)
+        for removed in ["资格要求", "核验时间", "来源覆盖", "待公布 ～ 待公布", "官方原文"]:
+            self.assertNotIn(removed, message)
+
     def test_different_group_windows_do_not_hide_a_still_open_short_race(self):
         candidate = item(category="wtm", closes="2026-10-01", registration_windows=[
             {"label": "100mi", "closes": "2026-10-01"}, {"label": "短距离", "closes": "2026-12-01"}])

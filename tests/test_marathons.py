@@ -91,7 +91,7 @@ class MarathonTests(unittest.TestCase):
         self.assertTrue(item["verified"])
         self.assertEqual(item["province"], "浙江")
         self.assertIn("平台转载", item["certification"])
-        self.assertIn("信息原文（最酷）", item_text(item))
+        self.assertIn("来源：最酷", item_text(item))
 
     def test_application_and_previous_edition_claims_are_not_confirmed(self):
         for text in ["拟申报中国田协A1类认证", "中国田协A类认证中", "尚未取得A类认证", "2026年中国田协A类认证赛事"]:

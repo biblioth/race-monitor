@@ -115,7 +115,7 @@ class ZuicoolBrandTests(unittest.TestCase):
             self.assertTrue(item['verified'])
             self.assertIn('平台信息', item['brand'])
             self.assertIn('未独立核实', item['brand'])
-            self.assertIn('信息原文（最酷）', item_text(item))
+            self.assertIn('来源：最酷', item_text(item))
 
     def test_navigation_and_recommendations_do_not_supply_brand_proof(self):
         source = card(name='2026杭州西山越野赛')
