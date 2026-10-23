@@ -12,13 +12,18 @@ jobs:
           ADMIN_TOKEN: ${{ secrets.RACE_MONITOR_ADMIN_TOKEN }}
         run: |
           python3 - <<'CHECK'
-          import json, os, urllib.request
+          import json, os, urllib.request, urllib.error
           base = "https://race-monitor.spicyao-lakewatch.workers.dev"
-          headers = {"Authorization": "Bearer " + os.environ["ADMIN_TOKEN"], "Content-Type": "application/json"}
+          headers = {"Authorization": "Bearer " + os.environ["ADMIN_TOKEN"], "Content-Type": "application/json", "User-Agent": "python-requests/2.32.5"}
           def call(path, body=None):
               req = urllib.request.Request(base + path, data=json.dumps(body).encode() if body is not None else None, headers=headers)
-              with urllib.request.urlopen(req, timeout=40) as response:
-                  return json.load(response)
+              try:
+                  with urllib.request.urlopen(req, timeout=40) as response:
+                      return json.load(response)
+              except urllib.error.HTTPError as error:
+                  print("Worker HTTP", error.code, "server", error.headers.get("server"), "cf-ray", error.headers.get("cf-ray"))
+                  print(error.read(2000).decode(errors="replace"))
+                  raise RuntimeError("Worker migration verification failed") from None
           before = call("/races/state")
           assert len(before["state"]["known"]) == 76
           assert before["state"]["last_run_date"] == "2026-10-23"
