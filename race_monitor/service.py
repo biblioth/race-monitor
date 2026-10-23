@@ -71,14 +71,15 @@ def plan(state, result, now):
                  directory_cache=result.get("directory_cache", state.get("directory_cache", {})),
                  paused_sources=result.get("paused_sources", {}),
                  marathon_coverage=result.get("marathon_coverage", {}),
+                 brand_coverage=result.get("brand_coverage", {}),
                  gaps=result.get("gaps", []), registry_count=result.get("registry_count", 0), a_class_count=result.get("a_class_count", 0), review_leads=result.get("review_leads", []))
     return state, events
 
 
-def execute(store, now, collector=collect):
+def execute(store, now, collector=collect, refresh=False):
     snapshot = store.load()
     state = snapshot["state"]
-    if state.get("last_run_date") == now.date().isoformat():
+    if not refresh and state.get("last_run_date") == now.date().isoformat():
         return {"status": "already_completed", "date": state["last_run_date"]}
     started = stamp((state.get("run") or {}).get("started_at"))
     if started and now - started < timedelta(minutes=25):
@@ -92,6 +93,7 @@ def execute(store, now, collector=collect):
     store.commit(version, state, events)
     return {"status": "completed", "date": state["last_run_date"], "known": len(state.get("known", {})), "messages": len(events),
             "marathon_coverage": result.get("marathon_coverage", {}),
+            "brand_coverage": result.get("brand_coverage", {}),
             "sources": result["sources"], "registry_count": result.get("registry_count"), "a_class_count": result.get("a_class_count"), "gaps": result.get("gaps", []), "review_leads": result.get("review_leads", [])}
 
 
@@ -125,6 +127,7 @@ def notify_failure():
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--preview", action="store_true", help="真实采集但不读写远端状态、不发送消息")
+    parser.add_argument("--refresh", action="store_true", help="手动复查当天来源，沿用持久化去重；日常定时不使用")
     parser.add_argument("--failure-notify", action="store_true")
     parser.add_argument("--output", default=".state/race-report.json")
     args = parser.parse_args(argv)
@@ -138,7 +141,7 @@ def main(argv=None):
         report = {"preview": True, "result": result, "messages": events, "known": len(state.get("known", {}))}
     else:
         store = Store(os.environ.get("RACE_MONITOR_URL", ""), os.environ.get("RACE_MONITOR_ADMIN_TOKEN", ""))
-        report = execute(store, now)
+        report = execute(store, now, refresh=args.refresh)
     path = Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

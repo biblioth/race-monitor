@@ -11,6 +11,10 @@ on:
         description: "Read sources without changing state or sending Feishu messages"
         type: boolean
         default: false
+      refresh:
+        description: "Manually recheck today's sources against persistent dedup state"
+        type: boolean
+        default: false
       runner:
         description: "GitHub hosted network environment"
         type: choice
@@ -82,9 +86,9 @@ jobs:
         if: inputs.network_probe != true
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run -a python -m race_monitor.service ${{ inputs.preview && '--preview' || '' }}
+            xvfb-run -a python -m race_monitor.service ${{ inputs.preview && '--preview' || '' }} ${{ inputs.refresh && '--refresh' || '' }}
           else
-            python -m race_monitor.service ${{ inputs.preview && '--preview' || '' }}
+            python -m race_monitor.service ${{ inputs.preview && '--preview' || '' }} ${{ inputs.refresh && '--refresh' || '' }}
           fi
       - name: Preserve source coverage report
         if: always()

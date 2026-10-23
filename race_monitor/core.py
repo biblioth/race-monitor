@@ -5,7 +5,7 @@ import hashlib
 import re
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 CST = timezone(timedelta(hours=8))
 CATEGORIES = {"utmb": "越野跑UTMB", "wtm": "越野跑WTM", "caa": "马拉松A类赛事", "brand": "品牌活动"}
@@ -31,6 +31,38 @@ def normalized_name(value):
     value = clean(value).lower()
     value = re.sub(r"20\d{2}|凯乐石|kailas|fuga|始祖鸟|arc.?teryx|暨第[一二三四五六七八九十\d]+届", "", value)
     return re.sub(r"[^\w\u4e00-\u9fff]", "", value)
+
+
+def identity_links(item):
+    """An event's own paths, without campaign query strings or site homepages."""
+    links = set()
+    for value in [item.get("official"), item.get("registration"), *(item.get("identity_links") or [])]:
+        p = urlsplit(safe_url(value))
+        path = p.path.rstrip("/")
+        if not p.hostname or not path:
+            continue
+        if p.hostname == "reg.zuicool.com":
+            match = re.fullmatch(r"/(?:en/)?(\d+)(?:/\d+)?", path)
+            if not match:
+                continue
+            path = "/" + match[1]
+            query = ""
+        else:
+            tracking = {"hmsr", "hmpl", "hmb", "hmkw", "hmci", "campaign", "spm", "gclid", "fbclid"}
+            query = urlencode(sorted((k, v) for k, v in parse_qsl(p.query, keep_blank_values=True)
+                                     if not k.lower().startswith("utm_") and k.lower() not in tracking))
+        links.add(urlunsplit(("https", p.hostname.lower(), path, query, "")))
+    return links
+
+
+def brand_families(item):
+    text = clean(item.get("name")) + " " + clean(item.get("brand"))
+    return {family for family, pattern in [("kailas", r"凯乐石|kailas|fuga"), ("arcteryx", r"始祖鸟|arc.?teryx")]
+            if re.search(pattern, text, re.I)}
+
+
+def discovery_rank(item):
+    return ({"utmb": 0, "wtm": 1, "caa": 2, "brand": 3}.get(item.get("category"), 9), item.get("priority", 10))
 
 
 def stamp(value):
@@ -88,23 +120,33 @@ def find_identity(item, known):
     # require the same edition; two different sessions on different dates stay separate.
     name = normalized_name(item["name"])
     for key, old in known.items():
-        if old.get("edition") != item.get("edition") or old.get("category") != item.get("category"):
+        if old.get("edition") != item.get("edition"):
+            continue
+        both_brand = old.get("category") == item.get("category") == "brand"
+        same_date = item.get("date") and item.get("date") == old.get("date")
+        if both_brand and item.get("date") and old.get("date") and not same_date:
+            continue
+        # Explicit shared signup/event paths also join branded marathons or UTMB
+        # reposts across categories. A generic website homepage cannot join them.
+        shared = identity_links(item) & identity_links(old)
+        own_shared = identity_links({"official": item.get("official")}) & identity_links({"official": old.get("official")})
+        if own_shared or any(urlsplit(link).hostname == "reg.zuicool.com" for link in shared):
+            return key
+        if old.get("category") != item.get("category") and "brand" not in {old.get("category"), item.get("category")}:
             continue
         if item.get("series_id") and old.get("series_id") == item["series_id"]:
             return key
-        a, b = safe_url(item.get("official")), safe_url(old.get("official"))
-        if item.get("category") == "caa":
-            def entries(value):
-                parsed = [urlsplit(safe_url(value.get(k))) for k in ["official", "registration"]]
-                return {(p.hostname, p.path.rstrip("/")) for p in parsed if p.hostname == "reg.zuicool.com" and re.fullmatch(r"/\d+/?", p.path)}
-            # Tracking query strings do not create a different signup. Edition
-            # equality above still protects the next year's reused platform ID.
-            if entries(item) & entries(old):
-                return key
-        same_page = a and a == b and urlsplit(a).path not in {"", "/"}
-        same_date = item.get("date") and item.get("date") == old.get("date")
+        families, old_families = brand_families(item), brand_families(old)
+        if families and old_families and not families & old_families:
+            continue
+        def province(value):
+            match = re.match(r"^(上海|江苏|浙江|安徽)", clean(value))
+            return match[1] if match else None
+        a, b = province(item.get("location")), province(old.get("location"))
+        if a and b and a != b:
+            continue
         other = normalized_name(old.get("name"))
-        if (same_page or same_date) and len(name) >= 5 and SequenceMatcher(None, name, other).ratio() >= .92:
+        if same_date and len(name) >= 5 and SequenceMatcher(None, name, other).ratio() >= .92:
             return key
     return item["id"]
 
@@ -113,16 +155,21 @@ def merge_discoveries(state, items, now):
     """Only first discovery may notify; changes to known items never do."""
     known = state.setdefault("known", {})
     fresh = []
-    for item in sorted(items, key=lambda v: v.get("priority", 10)):
+    for item in sorted(items, key=discovery_rank):
         key = find_identity(item, known)
         old = known.get(key)
+        if old is None and not eligible(item, now):
+            continue
         item = dict(item, id=key, first_seen=(old or {}).get("first_seen", now.isoformat()), last_seen=now.isoformat())
+        aliases = sorted(identity_links(item) | identity_links(old or {}))
+        item["identity_links"] = aliases
         if old is None and eligible(item, now):
             fresh.append(item)
-        if old is None or item.get("priority", 10) <= old.get("priority", 10):
+        if old is None or discovery_rank(item) <= discovery_rank(old):
             known[key] = item
         else:
             known[key]["last_seen"] = now.isoformat()
+            known[key]["identity_links"] = aliases
     return fresh
 
 
@@ -140,7 +187,7 @@ def item_text(item):
     for key, label in [("brand", "品牌关系"), ("certification", "A类依据")]:
         if item.get(key):
             lines.append(f"{label}：{clean(item[key])}")
-    source_label = "信息原文（最酷）" if item["category"] == "caa" and urlsplit(safe_url(item.get("official"))).hostname in {"zuicool.com", "reg.zuicool.com"} else "官方原文"
+    source_label = "信息原文（最酷）" if urlsplit(safe_url(item.get("official"))).hostname in {"zuicool.com", "reg.zuicool.com"} else "官方原文"
     lines.extend([f"报名入口：{safe_url(item.get('registration')) or clean(item.get('entry_path')) or '待公布，请查看信息原文'}",
                   f"{source_label}：{safe_url(item.get('official')) or safe_url(item.get('source'))}"])
     if item.get("evidence") and item["evidence"] != item.get("official"):

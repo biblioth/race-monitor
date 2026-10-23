@@ -20,6 +20,7 @@ from pypdf import PdfReader
 from .core import CST, clean, eligible, in_scope, normalized_name, safe_url, stamp
 from .catalog import cached_directory, certification
 from .browser import hk_browser_pages
+from .brands import discover as brand_catalog, inspect as brand_detail
 from .marathons import discover as marathon_catalog, candidates as marathon_candidates, inspect as marathon_detail
 
 UTMB_URL = "https://utmb.world/en/utmb-world-series-events"
@@ -371,7 +372,7 @@ def member_catalog(client):
     raise SourceError("；".join(errors))
 
 
-def zui_cards(html):
+def zui_cards(html, allow_empty=False):
     s = soup(html)
     cards = []
     for card in s.select(".reg-race-block"):
@@ -381,44 +382,25 @@ def zui_cards(html):
         tag = a.select_one(".label")
         title = clean(a.get_text(" ", strip=True).replace(tag.get_text() if tag else "", ""))
         text = card.get_text(" ", strip=True)
-        info = card.select_one("p")
-        fields = list(info.stripped_strings) if info else []
-        dates = chinese_dates(fields[0] if fields else text)
+        # A promotional paragraph can precede the actual date/location block.
+        # Read a dated paragraph with its own <br> location, never the first <p>.
+        fields = next((list(p.stripped_strings) for p in card.select("p")
+                       if len(list(p.stripped_strings)) >= 2 and chinese_dates(next(p.stripped_strings, ""))), [])
+        dates = chinese_dates(fields[0] if fields else "")
         location = clean(fields[-1]) if len(fields) > 1 else ""
         cards.append({"name": title, "url": urljoin(ZUI_URL, a["href"]), "text": text, "date": dates[0] if dates else None,
+                      "date_end": dates[-1] if dates else None,
                       "location": location,
                       "status": {"报名中": "open", "已截止": "closed", "已关闭": "closed", "已满": "sold_out", "报名预告": "preview", "即将报名": "preview"}.get(tag.get_text(strip=True) if tag else "", "unknown")})
+    if not cards and allow_empty and s.select_one("#angReg_frontpage") and s.select_one("input[name=q]") and "抱歉，暂时没有相关赛事可以报名" in s.get_text():
+        return []
     if not cards or not any(c["date"] and c["location"] for c in cards):
         raise SourceError("最酷赛事列表为空或未读到日期／地点，结构可能已变化")
     return cards
 
 
-def zui_detail(client, card, row=None):
-    s = soup(client.get(card["url"]))
-    text = s.get_text(" ", strip=True)
-    if "报名截止时间" not in text or "赛事地点" not in text:
-        raise SourceError("报名详情缺少日期／地点字段")
-    place = re.search(r"赛事地点[：:]\s*(.*?)\s*报名截止时间", text)
-    location = clean(place[1]) if place else ""
-    deadline = re.search(r"报名截止时间[：:]\s*(20\d{2})年(\d+)月(\d+)日\s*(\d+):(\d+)(?::(\d+))?", text)
-    closes = datetime(*map(int, deadline.groups(default="0")), tzinfo=CST).isoformat() if deadline else None
-    year = re.search(r"20\d{2}", card["name"])
-    if not year or not card.get("date"):
-        raise SourceError("报名详情无法确定当届活动日期")
-    tables = [clean(x.get_text(" ", strip=True)) for x in s.select("h5, table")]
-    item = {"id": row["id"] if row else f"brand:zui:{urlsplit(card['url']).path.strip('/')}:{year[0]}",
-            "edition": year[0], "name": card["name"], "category": "caa" if row else "brand", "date": card["date"], "location": location,
-            "closes": closes, "groups": "；".join(tables)[:1000], "status": card["status"], "official": card["url"], "registration": card["url"], "source": ZUI_URL,
-            "method": "先到先得" if "先报先得" in text or "先到先得" in text else None, "verified": bool(row), "in_region": bool(REGION.search(location)), "priority": 2}
-    if row:
-        item.update(province=row["province"], certification=certification(row), evidence=row["evidence"], series_id="caa:" + normalized_name(row["name"]))
-    else:
-        # Only an explicit organizer/sponsor relationship, not a brand keyword in
-        # the title or an ad elsewhere on the page, is enough evidence to notify.
-        body = text[:text.find("我的 报名")] if "我的 报名" in text else text
-        relation = re.search(r"(?:主办|冠名|赞助|合作伙伴|支持单位)[^。；;\n]{0,70}(?:凯乐石|KAILAS|FUGA|始祖鸟|ARC.?TERYX)|(?:凯乐石|KAILAS|始祖鸟|ARC.?TERYX)[^。；;\n]{0,50}(?:主办|冠名|赞助)", body, re.I)
-        item.update(verified=bool(relation), brand=clean(relation[0]) if relation else "品牌合作关系待核实（仅存线索，不推送）")
-    return [item]
+def zui_detail(client, card):
+    return brand_detail(client, card)
 
 
 def balanced_object(text, start):
@@ -474,7 +456,8 @@ def arcteryx_records(code):
     return records
 
 
-def arc_items(client):
+def arc_items(client, now=None):
+    now = now or datetime.now(CST)
     base = "https://arcteryx.com/cn/"
     page = BeautifulSoup(client.get(urljoin(base, "mountainClassroom")), "html.parser")
     runtime_url = next((urljoin(base, a["src"]) for a in page.select("script[src]") if "/runtime." in a["src"]), None)
@@ -492,6 +475,10 @@ def arc_items(client):
     records = [r for js in code for r in arcteryx_records(js)]
     if not records:
         raise SourceError("始祖鸟公开数据未读到活动；小程序不在当前覆盖范围")
+    dated = [date for r in records for date in chinese_dates(clean(r.get("eventstarttime")))]
+    if not dated or max(dated)[:4] < str(now.year):
+        latest = max(dated) if dated else "未读到活动日期"
+        raise SourceError(f"官网可访问，但山地课堂未读到当年活动（最新可读日期：{latest}）；会员小程序尚未接入")
     items = []
     for r in records:
         summary = clean(" ".join(str(r.get(k, "")) for k in ["title", "describe", "eventstarttime", "eventendtime", "eventlocation", "content"]))
@@ -529,24 +516,45 @@ def brand_article_items(client, index_url, brand, mode):
     items = []
     for url, title in links.items():
         body = soup(client.get(url))
-        text = body.get_text(" ", strip=True)
-        if not SPORT.search(text) or not re.search(r"报名|register|entry", text, re.I):
+        own = body.select_one("main") or body
+        text = own.get_text(" ", strip=True)
+        if not SPORT.search(text):
             continue
         # Restrict region evidence to an explicit location field, not footer/store names.
-        place = re.search(r"(?:赛事地点|活动地点|比赛地点|地点|Location)[：:]\s*([^。\n]{2,100})", text, re.I)
-        location = clean(place[1]) if place else "浙江·莫干山" if mode == "letour" and "Mogan" in text else ""
+        fields = own.get_text("\n", strip=True)
+        place = re.search(r"(?:赛事地点|活动地点|比赛地点|地点|Location)\s*[|：:]+\s*:?\s*([^。\n]{2,100})", fields, re.I)
+        location = clean(place[1]) if place else ""
         if not REGION.search(location):
             continue
-        date_field = re.search(r"(?:活动时间|比赛时间|赛事日期|Date)[：:]\s*([^。\n]{5,100})", text, re.I)
-        dates = chinese_dates(date_field[1]) if date_field else []
+        date_field = re.search(r"(?:活动时间|比赛时间|赛事日期|Date)\s*[|：:]+\s*([^。\n]{5,100})", fields, re.I)
+        dates = article_dates(date_field[1]) if date_field else []
         if not dates:
             continue
-        heading = body.select_one("h1")
-        name = clean(heading.get_text(" ", strip=True)) if heading else title
+        heading = own.select_one("h1")
+        name = clean(heading.get_text(" ", strip=True)) if heading else clean(body.title.get_text().split("|")[0]) if body.title else title
+        entry = next((safe_url(urljoin(url, a["href"])) for a in own.select("a[href]") if re.search(r"^(?:报名|立即报名|Register(?: now)?|Enter(?: now)?|Entry)$", clean(a.get_text()), re.I)), "")
+        announced = bool(re.search(r"报名(?:时间|开启|将于)|registration opens|entries open", text, re.I))
+        brand_proof = bool(re.search(r"凯乐石|KAILAS|始祖鸟|ARC.?TERYX", text, re.I))
+        verified = bool(entry or announced) and brand_proof
         items.append({"id": f"brand:{mode}:{urlsplit(url).path}:{dates[0][:4]}", "edition": dates[0][:4], "name": name,
-                      "date": dates[0], "location": location, "groups": "请查看活动规程", "category": "brand", "status": "preview",
-                      "official": url, "source": index_url, "brand": brand, "registration": url, "verified": True, "in_region": True, "priority": 1})
+                      "date": dates[0], "date_end": dates[-1], "location": location, "groups": "请查看活动规程", "category": "brand", "status": "open" if entry else "preview" if announced else "unknown",
+                      "official": url, "source": index_url, "brand": brand if brand_proof else "品牌关系待核验", "registration": entry or url,
+                      "verified": verified, "reason": "" if verified else "报名入口／预告或当届品牌关系尚未读到，暂不推送", "in_region": True, "priority": 1})
     return items
+
+
+def article_dates(text):
+    dates = chinese_dates(text)
+    if dates:
+        return dates
+    match = re.search(r"\b([A-Za-z]+)\.?\s+(\d{1,2})(?:\s*[-–—]\s*(\d{1,2}))?,?\s+(20\d{2})\b", text)
+    if match:
+        for fmt in ["%B %d %Y", "%b %d %Y"]:
+            try:
+                return [datetime.strptime(f"{match[1]} {day} {match[4]}", fmt).date().isoformat() for day in [match[2], match[3] or match[2]]]
+            except ValueError:
+                pass
+    return []
 
 
 def collect(now, client=None, directory_cache=None):
@@ -568,7 +576,7 @@ def collect(now, client=None, directory_cache=None):
         if in_scope(dict(event, category="utmb")) and event.get("dateEnd", event["dateBegin"]) >= now.date().isoformat():
             tasks.append((f"utmb:{event['tenant']}", lambda e=event: utmb_event(client, e)))
     tasks.extend([("wtm:fuji", lambda: fuji_items(client)), ("wtm:hk100", lambda: hk_items(client)),
-                  ("brand:arcteryx", lambda: arc_items(client)),
+                  ("brand:arcteryx", lambda: arc_items(client, now)),
                   ("brand:letour", lambda: brand_article_items(client, "https://www.letoursports.net/", "凯乐石合作赛事（朗途官方发布）", "letour"))])
     m = run("wtm:members", lambda: member_catalog(client))
     members.extend(m or [])
@@ -587,11 +595,10 @@ def collect(now, client=None, directory_cache=None):
     for candidate in candidates:
         name = "caa:zuicool:detail:" + urlsplit(candidate["url"]).path.strip("/").replace("/", ":")
         tasks.append((name, lambda c=candidate: marathon_detail(client, c, registry, run)))
-    for card in cards or []:
-        if not card.get("date") or card["date"] < now.date().isoformat():
-            continue
-        if BRAND.search(card["name"]) and REGION.search(card["location"]) and SPORT.search(card["name"]):
-            tasks.append(("entry:" + urlsplit(card["url"]).path.strip("/"), lambda c=card: zui_detail(client, c)))
+    brand_cards, brand_stats = brand_catalog(client, cards or [], now, run, zui_cards)
+    for card in brand_cards:
+        tasks.append(("brand:zuicool:detail:" + urlsplit(card["url"]).path.strip("/"), lambda c=card: zui_detail(client, c)))
+    brand_checks = []
     with ThreadPoolExecutor(max_workers=6) as pool:
         futures = {pool.submit(fn): name for name, fn in tasks}
         for future in as_completed(futures):
@@ -599,6 +606,9 @@ def collect(now, client=None, directory_cache=None):
             try:
                 found = future.result()
                 reports[name] = {"ok": True, "checked_at": now.isoformat(), "items": len(found)}
+                if name.startswith("brand:zuicool:detail:"):
+                    brand_stats["details_read"] += 1
+                    brand_checks.extend(found)
                 for item in found:
                     if item.get("category") == "caa":
                         marathon_checks.append(item)
@@ -609,6 +619,8 @@ def collect(now, client=None, directory_cache=None):
             except Exception as e:
                 reports[name] = {"ok": False, "error": clean(str(e))[:220], "checked_at": now.isoformat()}
     marathon_stats.update(details_read=len(marathon_checks), verified=sum(bool(x["verified"]) for x in marathon_checks), pending=sum(not x["verified"] for x in marathon_checks), notify_eligible=sum(eligible(x, now) for x in marathon_checks), detail_failures=len(candidates) - len(marathon_checks))
-    return {"items": items, "members": members, "sources": reports, "marathon_coverage": marathon_stats, "directory_cache": directory_cache, "registry_count": len(registry), "a_class_count": sum(r["category"] == "A" for r in registry),
+    brand_stats.update(verified=sum(bool(x["verified"]) for x in brand_checks), pending=sum(not x["verified"] for x in brand_checks),
+                       notify_eligible=sum(eligible(x, now) for x in brand_checks), detail_failures=len(brand_cards) - brand_stats["details_read"])
+    return {"items": items, "members": members, "sources": reports, "marathon_coverage": marathon_stats, "brand_coverage": brand_stats, "directory_cache": directory_cache, "registry_count": len(registry), "a_class_count": sum(r["category"] == "A" for r in registry),
             "paused_sources": {"brand:kailas": {"since": "2026-10-23", "reason": "官网云端405，按用户选择暂用朗途／最酷补漏"}},
-            "review_leads": leads, "gaps": ["凯乐石官网暂停采集，暂用朗途／最酷补漏，官网独有活动可能遗漏", "品牌会员小程序、微信群及仅图片发布的招募尚未接入", "马拉松发现以最酷列表及分页为主，平台未收录、仅海报信息及待核验A类条目可能漏检或延迟", "WTM总站受限时使用港百／环富士山官方成员清单，成员同步可能延迟"]}
+            "review_leads": leads, "gaps": ["凯乐石官网暂停采集，暂用朗途／最酷补漏，官网独有活动可能遗漏", "品牌会员小程序、微信群及仅图片发布的招募尚未接入；始祖鸟官网历史内容不代表当期活动已覆盖", "马拉松发现以最酷列表及分页为主，平台未收录、仅海报信息及待核验A类条目可能漏检或延迟", "WTM总站受限时使用港百／环富士山官方成员清单，成员同步可能延迟"]}

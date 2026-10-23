@@ -263,6 +263,15 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(response["status"], "already_completed")
         self.assertEqual(len(store.events), 1)
 
+    def test_manual_same_day_refresh_preserves_dedup_and_only_notifies_new_projects(self):
+        store = self.MemoryStore()
+        execute(store, NOW, collector=lambda now, **kwargs: result())
+        execute(store, NOW + timedelta(hours=1), collector=lambda now, **kwargs: result(), refresh=True)
+        self.assertEqual(len(store.events), 1)
+        execute(store, NOW + timedelta(hours=2), collector=lambda now, **kwargs: result(items=[item(), item(id="utmb:two:2027", series_id="utmb:two", name="2027 Second Event", official="https://two.utmb.world/")]), refresh=True)
+        self.assertEqual(len(store.events), 2)
+        self.assertEqual(len(store.value['state']['known']), 2)
+
     def test_crashed_batch_can_resume_after_lease_and_still_alert_once(self):
         store = self.MemoryStore()
         with self.assertRaises(RuntimeError):
