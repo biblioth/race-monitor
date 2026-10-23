@@ -1,0 +1,38 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "race-monitor",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-23",
+  "observability": {
+    "enabled": true
+  },
+  "triggers": {
+    "crons": [
+      "*/5 * * * *"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "race-monitor",
+      "database_id": "3f16ec05-30ab-4a67-b3fc-a64aca01b174"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "NOTIFICATION_QUEUE",
+        "queue": "race-monitor-notifications"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "race-monitor-notifications",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 8,
+        "dead_letter_queue": "race-monitor-notifications-dlq"
+      }
+    ]
+  }
+}
