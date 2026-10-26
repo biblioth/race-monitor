@@ -27,7 +27,10 @@ jobs:
                   with urllib.request.urlopen(request, timeout=30) as response:
                       return response.status, json.load(response)
               except urllib.error.HTTPError as error:
-                  return error.code, {}
+                  try:
+                      return error.code, json.load(error)
+                  except (ValueError, UnicodeError):
+                      return error.code, {}
               except Exception:
                   raise RuntimeError('Worker request failed; credentials omitted') from None
           status, health = call('/races/health')
@@ -37,6 +40,6 @@ jobs:
           assert health['pendingNotifications'] == 0
           assert call('/races/scheduler/dispatch', 'POST')[0] == 401
           status, result = call('/races/scheduler/dispatch', 'POST', True)
-          assert status == 200 and result.get('accepted'), f'Dispatch HTTP {status}'
+          assert status == 200 and result.get('accepted'), f'Dispatch HTTP {status}: {result}'
           print(json.dumps({'health': health, 'cloudflareDispatch': result}, ensure_ascii=False))
           PY
