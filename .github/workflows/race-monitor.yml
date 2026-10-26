@@ -99,7 +99,7 @@ jobs:
               list(pool.map(probe, urls))
           PY
       - name: Collect daily discoveries or compensate a missing batch
-        if: inputs.network_probe != true
+        if: inputs.network_probe != true && steps.daily_check.outputs.needs_collection == 'true'
         run: |
           if [ "$RUNNER_OS" = "Linux" ] && [ "$NEEDS_COLLECTION" = "true" ]; then
             xvfb-run -a python -m race_monitor.service ${{ inputs.preview && '--preview' || '' }} ${{ inputs.refresh && '--refresh' || '' }}
