@@ -77,7 +77,7 @@ export async function schedulerTick(env, now = new Date(), fetcher = fetch) {
   if (state.last_run_date === date) {
     if (day.overdue_at && !day.recovered_at) {
       const completed = state.last_completed_at ? beijingTime(new Date(state.last_completed_at)).time : time;
-      await scheduleEvent(env, date, "recovered", `✅ 赛事监控已补跑完成｜${date}\n完成时间：${completed}（北京时间）\n新增活动按原规则推送；无新增保持静默。`, at);
+      await scheduleEvent(env, date, "recovered", `✅ 赛事监控已补跑完成｜${date}\n完成时间：${completed}（北京时间）\n检查结果按日推送，新增活动另行通知。`, at);
     }
     return { status: "completed", date };
   }

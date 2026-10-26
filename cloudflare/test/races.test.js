@@ -178,3 +178,30 @@ test("enabling a second robot never backfills historical events", async () => {
   await commitRaceState(e, { version: 2, state: {}, events: [{ ...event, key: "races:digest:new-after-second-robot" }] });
   assert.equal((await e.DB.prepare("SELECT COUNT(*) AS n FROM monitor_deliveries").first()).n, 3);
 });
+
+test("a no-new daily receipt reaches both robots once through the existing transactional outbox", async () => {
+  const e = env();
+  e.FEISHU_ALERTS_WEBHOOK_URL = "https://example.com/new-group";
+  const receipt = { key: "races:no-new:20261027", type: "race_no_new", payload: {
+    message: "🏃 赛事监控｜今日无新增\n2026-10-27 09:05（北京时间）\n检查完成，数据源正常。" } };
+  for (const version of [0, 1]) {
+    const response = await worker.fetch(new Request("https://worker.test/races/commit", { method: "POST",
+      headers: { authorization: "Bearer test" }, body: JSON.stringify({ version, state: {}, events: [receipt] }) }), e);
+    assert.equal(response.status, 200);
+  }
+  const rows = (await e.DB.prepare("SELECT id,channel FROM monitor_deliveries ORDER BY id").all()).results;
+  assert.deepEqual(rows.map(r => r.channel), ["feishu", "feishu:alerts"]);
+  const previousFetch = globalThis.fetch; const posts = [];
+  globalThis.fetch = async (url, options) => {
+    const payload = JSON.parse(options.body);
+    assert.equal(payload.content.text, receipt.payload.message);
+    posts.push(url);
+    return Response.json({ code: 0 });
+  };
+  const messages = rows.map(row => ({ body: { deliveryId: row.id }, ack() {}, retry() { assert.fail("must succeed"); } }));
+  try {
+    await worker.queue({ messages }, e);
+    await worker.queue({ messages }, e);
+    assert.deepEqual(posts, [e.FEISHU_WEBHOOK_URL, e.FEISHU_ALERTS_WEBHOOK_URL]);
+  } finally { globalThis.fetch = previousFetch; }
+});

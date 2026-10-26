@@ -331,7 +331,8 @@ class StoreTests(unittest.TestCase):
         self.assertIn("utmb:one:2027", state["known"])
         self.assertEqual(alerts[0]["type"], "race_source_degraded")
         state, alerts = plan(state, copy.deepcopy(bad), NOW + timedelta(days=2))
-        self.assertEqual(alerts, [])
+        self.assertEqual([e["type"] for e in alerts], ["race_no_new"])
+        self.assertIn("部分来源异常，详见告警。", alerts[0]["payload"]["message"])
         state, alerts = plan(state, result(items=[]), NOW + timedelta(days=3))
         self.assertEqual(alerts[0]["type"], "race_source_recovered")
 
@@ -339,8 +340,75 @@ class StoreTests(unittest.TestCase):
         state = {"sources": {"brand:kailas": {"ok": False}}}
         collected = dict(result(items=[]), paused_sources={"brand:kailas": {"reason": "user chose partner sources"}})
         state, alerts = plan(state, collected, NOW)
-        self.assertEqual(alerts, [])
+        self.assertEqual([e["type"] for e in alerts], ["race_no_new"])
+        self.assertIn("检查完成，数据源正常。", alerts[0]["payload"]["message"])
         self.assertIn("brand:kailas", state["paused_sources"])
+
+    def test_no_new_receipt_uses_completion_time_and_is_sent_once_per_beijing_day(self):
+        store = self.MemoryStore()
+        finished = NOW + timedelta(minutes=4, seconds=30)
+        execute(store, NOW, collector=lambda now, **kw: result(items=[]), clock=lambda: finished)
+        self.assertEqual(store.events, [{"key": "races:no-new:20261022", "type": "race_no_new", "payload": {
+            "message": "🏃 赛事监控｜今日无新增\n2026-10-22 09:04（北京时间）\n检查完成，数据源正常。"}}])
+        self.assertEqual(store.value["state"]["last_completed_at"], finished.isoformat())
+        execute(store, NOW + timedelta(minutes=30), collector=lambda now, **kw: self.fail("already completed"))
+        execute(store, NOW + timedelta(hours=1), collector=lambda now, **kw: result(items=[]), refresh=True)
+        self.assertEqual(len(store.events), 1)
+        execute(store, NOW + timedelta(days=1), collector=lambda now, **kw: result(items=[]))
+        self.assertEqual([e["key"] for e in store.events], ["races:no-new:20261022", "races:no-new:20261023"])
+
+    def test_new_discovery_suppresses_empty_receipt_even_on_a_later_same_day_refresh(self):
+        store = self.MemoryStore()
+        execute(store, NOW, collector=lambda now, **kw: result())
+        execute(store, NOW + timedelta(hours=1), collector=lambda now, **kw: result(), refresh=True)
+        self.assertEqual([e["type"] for e in store.events], ["race_digest"])
+        self.assertEqual(store.value["state"]["daily_notification"], {"date": "2026-10-22", "kind": "new"})
+
+    def test_new_asian_wtm_member_is_not_reported_as_no_new_activity(self):
+        store = self.MemoryStore()
+        execute(store, NOW, collector=lambda now, **kw: result(items=[], members=[{
+            "id": "new-asia", "name": "New Asia", "asia": True, "verified": True}]))
+        self.assertEqual([e["type"] for e in store.events], ["race_wtm_asia"])
+
+    def test_partial_sources_failure_cannot_produce_a_healthy_no_new_receipt(self):
+        store = self.MemoryStore()
+        execute(store, NOW, collector=lambda now, **kw: result(items=[], sources={
+            "one": {"ok": True}, "two": {"ok": False, "error": "HTTP 403"}}))
+        self.assertEqual([e["type"] for e in store.events], ["race_source_degraded", "race_no_new"])
+        message = store.events[-1]["payload"]["message"]
+        self.assertIn("部分来源异常，详见告警。", message)
+        self.assertNotIn("数据源正常", message)
+
+    def test_total_failure_does_not_consume_receipt_and_compensation_can_still_send_it(self):
+        store = self.MemoryStore()
+        with self.assertRaisesRegex(RuntimeError, "全部来源"):
+            execute(store, NOW, collector=lambda now, **kw: result(items=[], sources={"one": {"ok": False}}))
+        self.assertEqual(store.events, [])
+        self.assertNotIn("daily_notification", store.value["state"])
+        execute(store, NOW + timedelta(minutes=30), collector=lambda now, **kw: result(items=[]))
+        self.assertEqual([e["type"] for e in store.events], ["race_no_new"])
+
+    def test_failed_final_commit_does_not_consume_the_no_new_receipt(self):
+        store = self.MemoryStore()
+        commit = store.commit
+        def fail_final(version, state, events):
+            if events:
+                raise RuntimeError("commit failed")
+            return commit(version, state, events)
+        with patch.object(store, "commit", side_effect=fail_final):
+            with self.assertRaisesRegex(RuntimeError, "commit failed"):
+                execute(store, NOW, collector=lambda now, **kw: result(items=[]))
+        self.assertNotIn("daily_notification", store.value["state"])
+        execute(store, NOW + timedelta(minutes=30), collector=lambda now, **kw: result(items=[]))
+        self.assertEqual([e["type"] for e in store.events], ["race_no_new"])
+
+    def test_new_activity_after_no_new_receipt_is_still_notified(self):
+        store = self.MemoryStore()
+        execute(store, NOW, collector=lambda now, **kw: result(items=[]))
+        execute(store, NOW + timedelta(hours=1), collector=lambda now, **kw: result(), refresh=True)
+        execute(store, NOW + timedelta(hours=2), collector=lambda now, **kw: result(items=[]), refresh=True)
+        self.assertEqual([e["type"] for e in store.events], ["race_no_new", "race_digest"])
+        self.assertEqual(store.value["state"]["daily_notification"]["kind"], "new")
 
 
 if __name__ == "__main__":

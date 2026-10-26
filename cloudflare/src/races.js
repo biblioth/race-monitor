@@ -4,7 +4,7 @@ import { beijingTime, schedulerStatus } from "./scheduler.js";
 import { raceState } from "./storage.js";
 export { raceState } from "./storage.js";
 
-const TYPES = new Set(["race_digest", "race_wtm_asia", "race_source_degraded", "race_source_recovered", "race_migration_completed"]);
+const TYPES = new Set(["race_digest", "race_no_new", "race_wtm_asia", "race_source_degraded", "race_source_recovered", "race_migration_completed"]);
 const PUBLIC_SOURCES = {
   hk_home: "https://hk100ultra.com/",
   hk_entry: "https://hk100ultra.com/entry/",
