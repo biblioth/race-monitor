@@ -1,35 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { DatabaseSync } from "node:sqlite";
-import { readFileSync } from "node:fs";
+import { database } from "../test-support/database.js";
 import worker from "../src/index.js";
 import { raceState, commitRaceState, raceHealthResponse, raceSourceResponse } from "../src/races.js";
 import { renderEvent, sendEvent } from "../src/notifications.js";
-
-function database() {
-  const sqlite = new DatabaseSync(":memory:");
-  sqlite.exec(readFileSync(new URL("../schema.sql", import.meta.url), "utf8"));
-  return {
-    prepare(sql) {
-      const make = (args = []) => ({
-        bind(...next) { return make(next); },
-        async first() { return sqlite.prepare(sql).get(...args) || null; },
-        async all() { return { results: sqlite.prepare(sql).all(...args) }; },
-        async run() { return { meta: { changes: Number(sqlite.prepare(sql).run(...args).changes) } }; },
-      });
-      return make();
-    },
-    async batch(statements) {
-      sqlite.exec("BEGIN");
-      try {
-        const results = [];
-        for (const s of statements) results.push(await s.run());
-        sqlite.exec("COMMIT");
-        return results;
-      } catch (e) { sqlite.exec("ROLLBACK"); throw e; }
-    },
-  };
-}
 
 const event = { key: "races:digest:sample", type: "race_digest", payload: { message: "🏃 新增活动\n分类：越野跑UTMB\n官方原文：https://utmb.world/" } };
 function env() { return { DB: database(), FEISHU_WEBHOOK_URL: "https://example.com/bot", ADMIN_TOKEN: "test", NOTIFICATION_QUEUE: { async send() {} } }; }

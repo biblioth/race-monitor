@@ -3,6 +3,9 @@
   "name": "race-monitor",
   "main": "src/index.js",
   "compatibility_date": "2026-10-23",
+  "vars": {
+    "SCHEDULER_ENABLED": "true"
+  },
   "observability": {
     "enabled": true
   },

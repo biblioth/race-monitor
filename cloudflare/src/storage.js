@@ -6,6 +6,11 @@ function parseJson(value, fallback = {}) {
   }
 }
 
+export async function raceState(db) {
+  const row = await db.prepare("SELECT version, state_json FROM race_monitor_state WHERE id=1").first();
+  return { version: Number(row?.version || 0), state: row ? JSON.parse(row.state_json) : {} };
+}
+
 export async function pendingDeliveries(db, staleBefore, limit = 20) {
   const result = await db
     .prepare(

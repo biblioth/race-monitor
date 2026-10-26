@@ -31,3 +31,15 @@ CREATE TABLE IF NOT EXISTS race_monitor_state (
     commit_id TEXT,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS race_scheduler_days (
+    run_date TEXT PRIMARY KEY,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    last_dispatch_at TEXT,
+    dispatch_lease TEXT,
+    last_dispatch_status TEXT,
+    last_dispatch_error TEXT,
+    overdue_at TEXT,
+    recovered_at TEXT,
+    last_checked_at TEXT NOT NULL
+);

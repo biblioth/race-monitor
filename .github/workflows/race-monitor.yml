@@ -1,12 +1,17 @@
 name: Daily race and outdoor activity monitor
+run-name: Race monitor · ${{ github.event_name == 'schedule' && 'GitHub fallback' || inputs.trigger || 'manual' }}
 
 on:
   schedule:
-    # 09:00 Beijing; 09:30 is a no-op when today's D1 batch has completed.
-    - cron: "0 1 * * *"
-    - cron: "30 1 * * *"
+    # Independent 10:17 Beijing fallback; Cloudflare is the 09:00 primary trigger.
+    # Already-completed days skip browser installation and collection.
+    - cron: "17 2 * * *"
   workflow_dispatch:
     inputs:
+      trigger:
+        description: "Trigger origin (Cloudflare sends cloudflare)"
+        type: string
+        default: manual
       preview:
         description: "Read sources without changing state or sending Feishu messages"
         type: boolean
@@ -34,7 +39,7 @@ concurrency:
 
 jobs:
   monitor:
-    if: github.event_name == 'workflow_dispatch' || vars.RACE_MONITOR_ENABLED == 'true'
+    if: vars.RACE_MONITOR_ENABLED == 'true' || (github.event_name == 'workflow_dispatch' && inputs.trigger != 'cloudflare')
     runs-on: ${{ inputs.runner || vars.RACE_MONITOR_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 23
     env:
@@ -48,8 +53,19 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
       - run: pip install -r requirements.txt
-      - name: Install isolated browser for the official HK100 fallback
+      - name: Check whether today's collection is needed
+        id: daily_check
         if: inputs.network_probe != true
+        run: |
+          if [ "$PREVIEW" = "true" ]; then
+            echo "needs_collection=true" >> "$GITHUB_OUTPUT"
+          else
+            python -m race_monitor.service --check-needed ${{ inputs.refresh && '--refresh' || '' }}
+          fi
+        env:
+          PREVIEW: ${{ inputs.preview }}
+      - name: Install isolated browser for the official HK100 fallback
+        if: inputs.network_probe != true && steps.daily_check.outputs.needs_collection == 'true'
         run: python -m playwright install --with-deps chromium
       - name: Probe restricted public sources without sending notifications
         if: inputs.network_probe == true
@@ -85,11 +101,13 @@ jobs:
       - name: Collect daily discoveries or compensate a missing batch
         if: inputs.network_probe != true
         run: |
-          if [ "$RUNNER_OS" = "Linux" ]; then
+          if [ "$RUNNER_OS" = "Linux" ] && [ "$NEEDS_COLLECTION" = "true" ]; then
             xvfb-run -a python -m race_monitor.service ${{ inputs.preview && '--preview' || '' }} ${{ inputs.refresh && '--refresh' || '' }}
           else
             python -m race_monitor.service ${{ inputs.preview && '--preview' || '' }} ${{ inputs.refresh && '--refresh' || '' }}
           fi
+        env:
+          NEEDS_COLLECTION: ${{ steps.daily_check.outputs.needs_collection }}
       - name: Preserve source coverage report
         if: always()
         uses: actions/upload-artifact@v4
@@ -98,7 +116,7 @@ jobs:
           path: .state/race-report.json
           if-no-files-found: ignore
           retention-days: 30
-      - name: Notify through the original Feishu robot if the job fails
+      - name: Notify both Feishu robots if the job fails
         if: failure() && inputs.preview != true && inputs.network_probe != true
         run: |
           python -m race_monitor.service --failure-notify

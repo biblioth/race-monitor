@@ -76,14 +76,21 @@ def plan(state, result, now):
     return state, events
 
 
-def execute(store, now, collector=collect, refresh=False):
-    snapshot = store.load()
-    state = snapshot["state"]
+def collection_status(state, now, refresh=False):
     if not refresh and state.get("last_run_date") == now.date().isoformat():
         return {"status": "already_completed", "date": state["last_run_date"]}
     started = stamp((state.get("run") or {}).get("started_at"))
-    if started and now - started < timedelta(minutes=25):
+    if started and timedelta(0) <= now - started < timedelta(minutes=25):
         return {"status": "running", "started_at": started.isoformat()}
+    return {"status": "needed", "date": now.date().isoformat()}
+
+
+def execute(store, now, collector=collect, refresh=False):
+    snapshot = store.load()
+    state = snapshot["state"]
+    status = collection_status(state, now, refresh)
+    if status["status"] != "needed":
+        return status
     state["run"] = {"date": now.date().isoformat(), "started_at": now.isoformat()}
     version = store.commit(snapshot["version"], state, [])
     result = collector(now, directory_cache=state.get("directory_cache", {}))
@@ -136,16 +143,24 @@ def notify_failure():
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--preview", action="store_true", help="真实采集但不读写远端状态、不发送消息")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--preview", action="store_true", help="真实采集但不读写远端状态、不发送消息")
     parser.add_argument("--refresh", action="store_true", help="手动复查当天来源，沿用持久化去重；日常定时不使用")
     parser.add_argument("--failure-notify", action="store_true")
+    mode.add_argument("--check-needed", action="store_true", help="仅读取状态，供工作流跳过已完成批次的浏览器安装")
     parser.add_argument("--output", default=".state/race-report.json")
     args = parser.parse_args(argv)
     now = datetime.now(CST)
     if args.failure_notify:
         notify_failure()
         return 0
-    if args.preview:
+    if args.check_needed:
+        store = Store(os.environ.get("RACE_MONITOR_URL", ""), os.environ.get("RACE_MONITOR_ADMIN_TOKEN", ""))
+        report = collection_status(store.load()["state"], now, refresh=args.refresh)
+        if os.environ.get("GITHUB_OUTPUT"):
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                output.write("needs_collection=" + str(report["status"] == "needed").lower() + "\n")
+    elif args.preview:
         result = collect(now)
         state, events = plan({}, result, now)
         report = {"preview": True, "result": result, "messages": events, "known": len(state.get("known", {}))}

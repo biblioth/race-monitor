@@ -1,6 +1,7 @@
 import { raceState, commitRaceState, raceHealthResponse, validateRaceCommit, raceSourceResponse } from "./races.js";
 import { sendEvent } from "./notifications.js";
 import { getDelivery, markDelivered, markDeliveryFailed, markQueued, pendingDeliveries } from "./storage.js";
+import { dispatchDailyWorkflow, schedulerTick } from "./scheduler.js";
 
 export async function enqueuePending(env) {
   const staleBefore = new Date(Date.now() - 30 * 60_000).toISOString();
@@ -46,10 +47,18 @@ async function processQueue(batch, env) {
 
 export default {
   async scheduled(controller, env, ctx) {
-    ctx.waitUntil(enqueuePending(env));
+    ctx.waitUntil((async () => {
+      try { await schedulerTick(env); }
+      finally { await enqueuePending(env); }
+    })());
   },
   async fetch(request, env) {
     const url = new URL(request.url);
+    if (request.method === "POST" && url.pathname === "/races/scheduler/dispatch") {
+      if (!authorized(request, env)) return new Response("Unauthorized", { status: 401 });
+      try { return Response.json(await dispatchDailyWorkflow(env)); }
+      catch (error) { return Response.json({ accepted: false, error: error.message }, { status: 502 }); }
+    }
     if (request.method === "GET" && url.pathname === "/races/health") return raceHealthResponse(env);
     if (request.method === "GET" && url.pathname === "/races/source") {
       if (!authorized(request, env)) return new Response("Unauthorized", { status: 401 });

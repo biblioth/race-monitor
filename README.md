@@ -2,7 +2,7 @@
 
 独立仓库：[biblioth/race-monitor](https://github.com/biblioth/race-monitor)。采集、部署、状态与通知队列由本项目独立维护。
 
-每天北京时间 **09:00** 通过 GitHub Actions 执行；09:30 的外部补偿任务仅在当天批次缺失／中断时续跑，已完成就退出，不重复采集。GitHub 定时调度可能有延迟。
+每天北京时间 **09:00** 由 Cloudflare 直接调用 GitHub API 触发采集，不再依赖 GitHub 的定时事件作为主触发。当天未完成时每隔 30 分钟补偿，最多尝试 6 次；运行中的采集不重复触发。**09:45** 仍未完成则向两个飞书机器人各发一次告警，补跑完成后各发一次恢复通知。GitHub 自带定时保留 **10:17** 的独立备用触发，可能延迟；当天已完成就跳过浏览器安装和采集。
 
 ## 范围和提醒
 
@@ -19,11 +19,14 @@
 - WTM 新增亚洲成员单独提醒，不自动纳入报名监控。基线已含港百、环富士山、越南 VMM，VMM 不会误报为新增。
 - 报名预告已提醒过的项目正式开报时不会再推送。
 - 必要的来源异常／恢复另行通知，同一持续异常不会每天重复。
+- 每天按时运行且没有新增时不发日报。未按时完成的告警按日期去重，恢复只发一次；触发 API 返回成功不等于采集已完成，必须以 D1 当天批次记录为准。
 
 ## 实现
 
 ```text
-GitHub 每日 Python 采集（6 个并发请求，单来源最多 3 次尝试）
+Cloudflare 每 5 分钟检查北京时间与当天完成状态
+  → 09:00 调用固定 GitHub 工作流；需要时每隔 30 分钟补偿
+  → GitHub 每日 Python 采集（6 个并发请求，单来源最多 3 次尝试）
   → 官网结构化赛历、最酷A类分页列表与报名页
   → 核验届次、范围、A 类及品牌证据
   → 合并跨来源报名入口、同届日期与归一化名称，仅生成首次新增
@@ -33,11 +36,11 @@ GitHub 每日 Python 采集（6 个并发请求，单来源最多 3 次尝试）
   → 原飞书机器人＋新增群机器人
 ```
 
-采集运行在本仓库的 GitHub Actions。状态与飞书通知使用独立的 Cloudflare Worker `race-monitor`、D1 `race-monitor`、队列 `race-monitor-notifications` 及死信队列。D1 长期保存去重记录，通知同时发送到原飞书机器人和新增群机器人，两边独立去重、投递和重试。Worker 每 5 分钟仅补发待投递消息，赛事采集保持每日一次。
+采集运行在本仓库的 GitHub Actions。状态与飞书通知使用独立的 Cloudflare Worker `race-monitor`、D1 `race-monitor`、队列 `race-monitor-notifications` 及死信队列。D1 长期保存去重记录，通知同时发送到原飞书机器人和新增群机器人，两边独立去重、投递和重试。Worker 每 5 分钟检查当天是否需要触发、是否超时，并补发待投递消息；正常完成的赛事采集保持每日一次。
 
 港百及其WTM成员页在直连受限时，先尝试官网 HTML 声明的公开 WordPress API。港百和凯乐石还可尝试通过 Worker 读取固定的公开来源。备用接口仅接受预设来源名称，独立管理员令牌只用于访问自己的 Worker，不会转发给赛事官网；港百这些路径仍受限时，使用 GitHub 上的独立 Chromium 匿名读取官方主页和 Entry 页，只在读到当届年份及报名规程时认定成功。不会使用个人浏览器、登录状态或人工验证码方案；全部路径都失败时报告覆盖异常。
 
-采集任务先取得 25 分钟执行租约，运行上限 23 分钟；09:30 可补偿被中断的批次。状态与待发消息原子写入，发送失败不会被记为成功。队列退避重试，超过队列重试次数的待发记录仍保留供扫描补发。Webhook 没有接收端幂等键，极端情况下发送成功但响应丢失可能产生重复投递。
+采集任务先取得 25 分钟执行租约，运行上限 23 分钟；租约过期后可补偿被中断的批次。D1 中的 `race_scheduler_days` 以北京时间日期记录触发次数、状态与告警；原子认领防止重叠 Cron 重复调用 API，单日最多 6 次触发。API 超时也会等待 30 分钟再试，最终仍以采集自身的日期去重、25 分钟租约和版本提交防止重复发现。告警与两路待投递记录原子写入，发送失败不会被记为成功。队列退避重试，超过队列重试次数的待发记录仍保留供扫描补发。Webhook 没有接收端幂等键，极端情况下发送成功但响应丢失可能产生重复投递。
 
 ## 来源与边界
 
@@ -94,20 +97,22 @@ npm run check
 
 1. 为本项目配置独立的 D1、通知队列与死信队列，并更新 `cloudflare/wrangler.jsonc` 的资源绑定。
 2. 在 `cloudflare/` 执行 `npx wrangler d1 execute race-monitor --remote --file=./schema.sql`，再执行 `npx wrangler deploy`。
-3. Worker Secrets：`ADMIN_TOKEN`、`FEISHU_WEBHOOK_URL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_ALERTS_WEBHOOK_URL`、`FEISHU_ALERTS_WEBHOOK_SECRET`。管理员令牌为赛事项目独立生成；旧机器人沿用原设置，新增群使用独立 URL 和签名密钥。
+3. Worker Secrets：`ADMIN_TOKEN`、`GITHUB_DISPATCH_TOKEN`、`FEISHU_WEBHOOK_URL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_ALERTS_WEBHOOK_URL`、`FEISHU_ALERTS_WEBHOOK_SECRET`。管理员令牌为赛事项目独立生成；旧机器人沿用原设置，新增群使用独立 URL 和签名密钥。GitHub 触发凭据只作为 Worker Secret 保存，不进入仓库、运行报告或接口响应；可使用具备本仓库 Actions 写入权限的细粒度令牌，或具备 `repo` 权限的现有 OAuth 授权。目标仓库、工作流和分支固定，禁止跟随重定向。
 4. 本仓库 GitHub Secrets：`RACE_MONITOR_ADMIN_TOKEN`（与 Worker 的 `ADMIN_TOKEN` 相同）、`FEISHU_WEBHOOK_URL`、`FEISHU_WEBHOOK_SECRET`、`FEISHU_ALERTS_WEBHOOK_URL`、`FEISHU_ALERTS_WEBHOOK_SECRET`。GitHub 飞书配置仅用于整个采集任务失败时向两个机器人分别发送告警。
-5. 手动执行 `preview=true` 验证真实来源，再执行正式任务。将仓库变量 `RACE_MONITOR_ENABLED` 设置为 `true` 才会运行定时任务；手动预览不受该开关影响。新迁移必须先导入原去重状态，再启用定时任务。
+5. 手动执行 `preview=true` 验证真实来源，再执行正式任务。Worker 的 `SCHEDULER_ENABLED=true` 启用主触发；仓库变量 `RACE_MONITOR_ENABLED=true` 允许 Cloudflare 触发和 GitHub 备用定时执行。暂停监控时将两处都设为 `false`。手动任务和预览不受开关影响。新迁移必须先导入原去重状态，再启用定时任务。
+6. 手动执行工作流 `Verify Cloudflare scheduler`，验证健康状态、双机器人配置、接口鉴权，并让 Worker 实际触发一次每日任务。当天已完成时该任务退出，不重复推送；尚未完成则执行当天采集。调度故障测试使用本地模拟数据库和假机器人，不向真实群发送故障测试消息。
 
-手动复查：工作流 `refresh=true` 会重查当天来源并沿用 D1 去重，只通知尚未发现的合格项目；不会重新推送已有活动。日常定时任务保持每天一次，09:30 补偿逻辑不变。`preview=true` 优先进入无写入／无通知预览，结合 `refresh=true` 也不会写入状态。
+手动复查：工作流 `refresh=true` 会重查当天来源并沿用 D1 去重，只通知尚未发现的合格项目；不会重新推送已有活动。正常日常采集保持每天一次。`preview=true` 进入无写入／无通知预览，结合 `refresh=true` 也不会写入状态。`--check-needed` 是只读预检，与 `--preview` 互斥；不会采集或取得租约，仅供工作流跳过不必要的浏览器安装。
 
 去重先使用稳定项目 ID 和同届报名入口，再比较同届日期及归一化名称，保存跨网站入口别名。报名链接中的跟踪参数不生成新项目；其他站点 URL 的活动 ID 查询参数会保留。相同活动跨品牌／A 类分类只发送一条，优先保留 UTMB、WTM、A 类赛事分类。不同年份、不同日期的独立场次保留，证据不足不会消耗首次通知机会。
 
 接口：
 
-- `GET /races/health`：公开的运行状态、来源覆盖和待投递数量，不含凭据或完整活动状态；按每日周期判定新鲜度。
+- `GET /races/health`：公开的运行状态、来源覆盖、待投递数量及当日调度摘要，不含凭据或完整活动状态；启用主调度时，09:45 当天尚未完成即返回 503，不再等待旧的 26 小时新鲜度阈值。
 - `GET /races/state`：需本项目 `ADMIN_TOKEN`，读取版本和完整去重状态。
 - `GET /races/source?name=...`：需本项目 `ADMIN_TOKEN`，读取预设白名单内的公开页面，不能传入任意 URL。
 - `POST /races/commit`：需本项目 `ADMIN_TOKEN`，对状态和待发事件做原子版本提交，冲突返回 409。
+- `POST /races/scheduler/dispatch`：需本项目 `ADMIN_TOKEN`，让 Worker 实际触发固定的每日工作流，供部署验证与手动补跑；不接受其他仓库、分支、工作流、任意 URL 或刷新参数。
 
 GitHub Actions 每轮保存来源报告 30 天；D1 长期保留赛事身份、成员基线和赛事投递去重记录。本项目不包含订位监控代码或其他项目的运行状态。
 

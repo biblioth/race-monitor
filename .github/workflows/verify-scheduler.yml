@@ -1,0 +1,42 @@
+name: Verify Cloudflare scheduler
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify health and dispatch one daily batch through Cloudflare
+        env:
+          RACE_MONITOR_ADMIN_TOKEN: ${{ secrets.RACE_MONITOR_ADMIN_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.request, urllib.error
+          base = 'https://race-monitor.spicyao-lakewatch.workers.dev'
+          def call(path, method='GET', authenticated=False):
+              headers = {'User-Agent': 'python-requests/2.32.5'}
+              if authenticated:
+                  headers['Authorization'] = 'Bearer ' + os.environ['RACE_MONITOR_ADMIN_TOKEN']
+              request = urllib.request.Request(base + path, method=method, headers=headers)
+              try:
+                  with urllib.request.urlopen(request, timeout=30) as response:
+                      return response.status, json.load(response)
+              except urllib.error.HTTPError as error:
+                  return error.code, {}
+              except Exception:
+                  raise RuntimeError('Worker request failed; credentials omitted') from None
+          status, health = call('/races/health')
+          assert status == 200, f'Health HTTP {status}'
+          assert health['scheduler']['enabled'] and health['scheduler']['configured']
+          assert set(health['channels']) == {'feishu', 'feishu:alerts'}
+          assert health['pendingNotifications'] == 0
+          assert call('/races/scheduler/dispatch', 'POST')[0] == 401
+          status, result = call('/races/scheduler/dispatch', 'POST', True)
+          assert status == 200 and result.get('accepted'), f'Dispatch HTTP {status}'
+          print(json.dumps({'health': health, 'cloudflareDispatch': result}, ensure_ascii=False))
+          PY

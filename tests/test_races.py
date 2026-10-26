@@ -9,7 +9,7 @@ from unittest.mock import patch
 from race_monitor.core import CST, digest_events, merge_discoveries, member_events, eligible, display_time, in_scope
 from race_monitor import sources as source_module
 from race_monitor.catalog import cached_directory, certification, validate_snapshot, SNAPSHOT
-from race_monitor.service import execute, plan
+from race_monitor.service import execute, plan, collection_status, main
 from race_monitor.sources import Client, utmb_index, utmb_event, next_data, wtm_members, directory_rows, match_directory, zui_cards, SourceError
 
 NOW = datetime(2026, 10, 22, 9, tzinfo=CST)
@@ -267,6 +267,32 @@ class StoreTests(unittest.TestCase):
         response = execute(store, NOW + timedelta(minutes=30), collector=lambda now, **kwargs: self.fail("should not collect"))
         self.assertEqual(response["status"], "already_completed")
         self.assertEqual(len(store.events), 1)
+
+    def test_browser_preflight_respects_completed_days_refresh_and_expired_leases(self):
+        state = {"last_run_date": NOW.date().isoformat()}
+        self.assertEqual(collection_status(state, NOW)["status"], "already_completed")
+        self.assertEqual(collection_status(state, NOW, refresh=True)["status"], "needed")
+        state = {"run": {"started_at": NOW.isoformat()}}
+        self.assertEqual(collection_status(state, NOW + timedelta(minutes=24))["status"], "running")
+        self.assertEqual(collection_status(state, NOW + timedelta(minutes=25))["status"], "needed")
+        self.assertEqual(collection_status(state, NOW - timedelta(minutes=1))["status"], "needed")
+
+    def test_preflight_outputs_skip_without_collecting_or_mutating_state(self):
+        import tempfile
+        from pathlib import Path
+        store = self.MemoryStore()
+        store.value["state"]["last_run_date"] = NOW.date().isoformat()
+        before = copy.deepcopy(store.value)
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "github-output"
+            with patch('race_monitor.service.Store', return_value=store), patch('race_monitor.service.datetime') as clock, \
+                    patch('race_monitor.service.collect') as collect_mock, patch.dict('os.environ', {'GITHUB_OUTPUT': str(output)}):
+                clock.now.return_value = NOW
+                self.assertEqual(main(['--check-needed', '--output', str(Path(directory) / 'report.json')]), 0)
+                collect_mock.assert_not_called()
+            self.assertEqual(output.read_text(), 'needs_collection=false\n')
+        self.assertEqual(store.value, before)
+        self.assertEqual(store.events, [])
 
     def test_manual_same_day_refresh_preserves_dedup_and_only_notifies_new_projects(self):
         store = self.MemoryStore()

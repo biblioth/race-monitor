@@ -1,5 +1,8 @@
 import { renderRaceMessage } from "./race-messages.js";
 import { configuredChannels } from "./notifications.js";
+import { beijingTime, schedulerStatus } from "./scheduler.js";
+import { raceState } from "./storage.js";
+export { raceState } from "./storage.js";
 
 const TYPES = new Set(["race_digest", "race_wtm_asia", "race_source_degraded", "race_source_recovered", "race_migration_completed"]);
 const PUBLIC_SOURCES = {
@@ -24,11 +27,6 @@ export async function raceSourceResponse(request, fetcher = fetch) {
   } catch {
     return Response.json({ error: "Public source fetch failed" }, { status: 502 });
   }
-}
-
-export async function raceState(db) {
-  const row = await db.prepare("SELECT version, state_json FROM race_monitor_state WHERE id=1").first();
-  return { version: Number(row?.version || 0), state: row ? JSON.parse(row.state_json) : {} };
 }
 
 export function validateRaceCommit(body) {
@@ -79,11 +77,15 @@ export async function raceHealthResponse(env) {
     FROM monitor_deliveries d JOIN monitor_events e ON e.id=d.event_id
     WHERE e.event_type LIKE 'race_%' AND d.status!='delivered'`).first();
   const failed = Object.entries(state.sources || {}).filter(([, x]) => !x.ok).map(([name, x]) => ({ name, error: x.error }));
-  const scheduleOk = age !== null && age >= 0 && age < 26 * 3600_000;
+  const scheduler = await schedulerStatus(env, new Date(now));
+  const local = beijingTime(new Date(now));
+  const fresh = age !== null && age >= 0 && age < 26 * 3600_000;
+  const scheduleOk = fresh && (!scheduler.enabled || (scheduler.configured &&
+    (local.minutes < 9 * 60 + 45 || state.last_run_date === local.date)));
   const deliveryOk = !pending?.oldest || now - Date.parse(pending.oldest) < 30 * 60_000;
   const channels = configuredChannels(env);
   const ok = scheduleOk && deliveryOk && failed.length === 0 && channels.length > 0;
   return Response.json({ ok, scheduleOk, deliveryOk, lastCompletedAt: completedAt, runDate: state.last_run_date || null,
     knownEvents: Object.keys(state.known || {}).length, sources: { total: Object.keys(state.sources || {}).length, failed },
-    gaps: state.gaps || [], channels, pendingNotifications: Number(pending?.count || 0) }, { status: ok ? 200 : 503 });
+    gaps: state.gaps || [], channels, scheduler, pendingNotifications: Number(pending?.count || 0) }, { status: ok ? 200 : 503 });
 }
