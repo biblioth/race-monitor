@@ -24,7 +24,9 @@ export async function dispatchDailyWorkflow(env, fetcher = fetch) {
   let response;
   try {
     response = await fetcher(WORKFLOW, {
-      method: "POST", redirect: "error", signal: AbortSignal.timeout(20_000),
+      // Workers supports manual/follow, but not the standard "error" mode.
+      // Manual plus the status check below refuses redirects without forwarding credentials.
+      method: "POST", redirect: "manual", signal: AbortSignal.timeout(20_000),
       headers: { authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`, accept: "application/vnd.github+json",
         "content-type": "application/json", "user-agent": "race-monitor-cloudflare-scheduler",
         "x-github-api-version": "2022-11-28" },

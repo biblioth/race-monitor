@@ -29,13 +29,14 @@ test("workflow dispatch only posts to the fixed repository, with no redirects or
   const e = env();
   await dispatchDailyWorkflow(e, async (url, options) => {
     assert.equal(url, "https://api.github.com/repos/biblioth/race-monitor/actions/workflows/race-monitor.yml/dispatches");
-    assert.equal(options.redirect, "error");
+    assert.equal(options.redirect, "manual");
     assert.equal(options.headers.authorization, "Bearer dispatch-secret");
     assert.deepEqual(JSON.parse(options.body), { ref: "main", inputs: { trigger: "cloudflare" } });
     return accepted();
   });
   await assert.rejects(dispatchDailyWorkflow(e, async () => { throw new Error("private dispatch-secret"); }), /^Error: GitHub dispatch request failed or timed out$/);
   await assert.rejects(dispatchDailyWorkflow(e, async () => new Response("private dispatch-secret", { status: 403 })), /^Error: GitHub dispatch HTTP 403$/);
+  await assert.rejects(dispatchDailyWorkflow(e, async () => new Response(null, { status: 302, headers: { location: "https://other.example/" } })), /^Error: GitHub dispatch HTTP 302$/);
   delete e.GITHUB_DISPATCH_TOKEN;
   await assert.rejects(dispatchDailyWorkflow(e), /credential is missing/);
 });
