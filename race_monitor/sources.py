@@ -18,7 +18,7 @@ from pypdf import PdfReader
 
 from .core import CST, clean, eligible, in_scope, normalized_name, safe_url, stamp
 from .catalog import cached_directory, certification
-from .browser import hk_browser_pages
+from .browser import hk_browser_pages, BrowserReadError
 from .brands import discover as brand_catalog, inspect as brand_detail
 from .letour import collect as letour_items
 from .marathons import discover as marathon_catalog, candidates as marathon_candidates, inspect as marathon_detail
@@ -290,6 +290,8 @@ def hk_items(client):
         try:
             home, entry = hk_browser_pages()
             return hk_page_items(home, entry, "official_browser")
+        except BrowserReadError as e:
+            raise SourceError(f"{original}；隔离浏览器备用失败（{e}）") from None
         except Exception as e:
             raise SourceError(f"{original}；隔离浏览器备用失败（{type(e).__name__}）") from None
 
