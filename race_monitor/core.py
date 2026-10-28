@@ -175,11 +175,9 @@ def merge_discoveries(state, items, now):
 
 def item_text(item):
     labels = {"open": "报名中", "preview": "报名预告", "announced": "报名公告已发布，状态见原文", "ballot": "抽签登记", "charity": "慈善名额入口（余位未核实）"}
-    date = "时间待定" if item.get('date_status') == 'pending' and not item.get('date') else display_time(item.get("date"))
+    date = display_time(item.get("date"))
     if item.get("date_end") and item["date_end"] != item.get("date"):
         date += " ～ " + display_time(item["date_end"])
-    if item.get('date_note'):
-        date += "（" + clean(item['date_note']) + "）"
     lines = [f"🆕 {clean(item['name'])}", f"分类：{CATEGORIES[item['category']]}",
              f"{date}｜{clean(item.get('location')) or '地点待公布'}"]
     groups = clean(item.get("groups"))

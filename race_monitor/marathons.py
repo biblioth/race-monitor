@@ -10,69 +10,6 @@ from .catalog import certification
 from .core import CST, clean, in_scope, normalized_name, safe_url
 
 A_CATALOG = "https://zuicool.com/tag/615955"
-PENDING_DATE = re.compile(r"待定|待公布|暂定|拟定|预计|另行|择期|取消|延期")
-RACE_DATE = r"(?:(?P<year>20\d{2})\s*(?:年|[.\-/])\s*)?(?P<month>\d{1,2})\s*(?:月|[.\-/])\s*(?P<day>\d{1,2})\s*(?:日|号)?"
-
-
-def date_evidence(header, text, name, year, url):
-    """Only a race-date field or this edition's race statement can date a race."""
-    evidence = []
-    header_date, _ = dotted_date(header)
-    if not header_date:
-        match = re.search(RACE_DATE, header)
-        if match and match['year']:
-            try:
-                header_date = datetime(int(match['year']), int(match['month']), int(match['day'])).date().isoformat()
-            except ValueError:
-                pass
-    if header:
-        evidence.append({"kind": "header", "date": header_date, "pending": bool(PENDING_DATE.search(header)),
-                         "text": clean(header)[:160], "source": url})
-    markers = r"比赛时间|赛事时间|竞赛时间|比赛日期|赛事日期|竞赛日期|开赛时间|定于|将于"
-    pattern = re.compile(r"(?P<marker>" + markers + r")\s*[：:]?\s*(?:确定为|调整为|改为|定为|为)?\s*" + RACE_DATE)
-    for match in pattern.finditer(text):
-        prefix = re.split(r"[。；;！？!?\n]", text[max(0, match.start() - 120):match.start()])[-1]
-        suffix = re.split(r"[。；;！？!?\n]", text[match.end():match.end() + 80])[0]
-        if re.search(r"原\s*$|曾\s*$|拟\s*$|暂\s*$|预计\s*$", prefix):
-            continue
-        if match['marker'] in {'定于', '将于'}:
-            if re.search(r"报名|领物|接驳|班车|抽签|缴费|截止|博览会|开幕式", prefix[-30:]):
-                continue
-            if normalized_name(name) not in normalized_name(prefix) and not re.search(r"本届|本次|本场", prefix):
-                continue
-            if not re.search(r"开赛|起跑|鸣枪|举行|举办", suffix):
-                continue
-        prior_years = re.findall(r"20\d{2}", prefix)
-        declared_year = match['year'] or (prior_years[-1] if prior_years else year)
-        if declared_year != year:
-            continue
-        try:
-            date = datetime(int(declared_year), int(match['month']), int(match['day'])).date().isoformat()
-        except ValueError:
-            continue
-        snippet = clean(prefix[-70:] + match[0] + suffix[:50])
-        if PENDING_DATE.search(snippet):
-            continue
-        evidence.append({"kind": "body", "date": date, "pending": False, "text": snippet[:160], "source": url})
-    return evidence
-
-
-def resolve_dates(evidence):
-    firm = [e for e in evidence if e.get('date') and not e['pending']]
-    exact = {e['date'] for e in firm if len(e['date']) == 10}
-    months = {e['date'] for e in firm if len(e['date']) == 7}
-    pending = any(e['pending'] for e in evidence)
-    conflict = len(exact) > 1 or (bool(exact) and any(d[:7] != m for d in exact for m in months)) or (not exact and len(months) > 1)
-    if conflict:
-        return {"date": None, "date_status": "conflict", "date_note": "日期信息不一致，待核实", "date_evidence": evidence}
-    if exact:
-        date = next(iter(exact))
-        body = any(e['kind'] == 'body' and e['date'] == date for e in firm)
-        note = ("正文公布，日期栏待定" if body else "部分页面日期栏待定") if pending else ""
-        return {"date": date, "date_status": "body_published" if body else "published", "date_note": note, "date_evidence": evidence}
-    if months and not pending:
-        return {"date": next(iter(months)), "date_status": "month_only", "date_note": "仅公布月份", "date_evidence": evidence}
-    return {"date": None, "date_status": "pending", "date_note": "", "date_evidence": evidence}
 
 
 def dom(html):
@@ -131,7 +68,7 @@ def catalog_page(html, url):
         if not a or not info or not platform_url(a["href"]):
             continue
         text = clean(info.get_text(" ", strip=True))
-        date, end = dotted_date(text) if not PENDING_DATE.search(text.split('·', 1)[0]) else (None, None)
+        date, end = dotted_date(text)
         location = clean(text.split("·", 1)[-1]) if "·" in text else ""
         cards.append({"name": clean(a.get_text()), "url": safe_url(a["href"]), "date": date, "date_end": end,
                       "location": location, "province": province(location), "a_tag": True,
@@ -228,10 +165,8 @@ def parse_detail(html, url):
     if is_reg:
         text = root.get_text("\n", strip=True)
         place = re.search(r"赛事地点[：:]\s*(.*?)\s*报名截止时间", text, re.S)
-        date_field = re.search(r"赛事日期[：:]\s*(.*?)\s*赛事地点", text, re.S)
-        date_header = clean(date_field[1]) if date_field else ""
-        description = root.select_one('.reg_race-description')
-        date_text = description.get_text('\n', strip=True) if description else text
+        dates = re.search(r"赛事日期[：:]\s*(20\d{2})年(\d+)月(\d+)日", text)
+        date = datetime(*map(int, dates.groups())).date().isoformat() if dates else None
         location = clean(place[1]) if place else ""
         deadline = re.search(r"报名截止时间[：:]\s*(20\d{2})年(\d+)月(\d+)日\s*(\d+):(\d+)(?::(\d+))?", text)
         closes = datetime(*map(int, deadline.groups(default="0")), tzinfo=CST).isoformat() if deadline else None
@@ -245,11 +180,10 @@ def parse_detail(html, url):
         if not info:
             raise ValueError("最酷赛事详情缺少日期／地点")
         info_text = clean(info.get_text(" ", strip=True))
-        date_header = info_text.split('·', 1)[0]
+        date, _ = dotted_date(info_text)
         location = clean(info_text.split("·", 1)[-1]) if "·" in info_text else ""
         own = s.select(".event-desc_lead,.event-contact")
         text = "\n".join(n.get_text("\n", strip=True) for n in own)
-        date_text = text
         actions = s.select_one(".event-actions")
         own_status = status(actions.get_text(" ", strip=True) if actions else "")
         if own_status == "unknown":
@@ -259,8 +193,7 @@ def parse_detail(html, url):
         news = [a["href"] for a in sorted(s.select(".event-wpposts a[href]"), key=lambda a: "规程" not in a.get_text())
                 if re.fullmatch(r"https://zuicool.com/news/archives/\d+/?", a["href"]) and re.search(r"报名|规程", a.get_text())]
         closes, groups = None, ""
-    dates = resolve_dates(date_evidence(date_header, date_text, name, year[0], url))
-    return {"name": name, "edition": year[0], **dates, "location": location, "province": province(location), "text": text,
+    return {"name": name, "edition": year[0], "date": date, "location": location, "province": province(location), "text": text,
             "status": own_status, "closes": closes, "groups": groups, "registration": registration, "related": related, "news": news, "url": url}
 
 
@@ -306,14 +239,11 @@ def inspect(client, card, registry, read):
     reg_status = reg["status"] if reg else meta["status"]
     if any(p["status"] in {"closed", "sold_out"} for p in pages):
         reg_status = "closed"
-    dates = resolve_dates([e for p in pages for e in p['date_evidence']])
-    verified = bool(cert) and reg_status != "unknown" and bool(province(meta["location"])) and dates['date_status'] != 'conflict'
+    verified = bool(cert) and reg_status != "unknown" and bool(province(meta["location"]))
     reason = "当届A类依据待核验" if not cert else "报名信息尚未公布" if reg_status == "unknown" else ""
-    if not reason and dates['date_status'] == 'conflict':
-        reason = "赛事日期互相冲突，待核验"
     return [{"id": f"caa:zuicool:{urlsplit(meta['url']).path.strip('/').replace('/', ':')}:{expected_year}",
              "series_id": "caa:" + normalized_name(meta["name"]), "edition": expected_year, "name": meta["name"], "category": "caa",
-             **dates, "province": province(meta["location"]), "location": meta["location"],
+             "date": (reg or meta)["date"] or meta["date"], "province": province(meta["location"]), "location": meta["location"],
              "status": reg_status, "closes": reg["closes"] if reg else None, "groups": reg["groups"] if reg else "请查看当届规程",
              "official": meta["url"], "registration": reg["url"] if reg else meta["registration"], "source": card["url"],
              "certification": cert, "certification_state": state, "evidence": evidence, "verified": verified, "reason": reason,
