@@ -158,6 +158,35 @@ class SourceTests(unittest.TestCase):
         self.assertNotIn("brand:kailas", collected["sources"])
         self.assertIn("brand:kailas", collected["paused_sources"])
 
+    def test_paused_hk100_is_not_collected_and_wtm_members_use_only_fuji(self):
+        calls = []
+        class Client:
+            def get(self, url, **kwargs):
+                calls.append(url)
+                if 'hk100ultra.com' in url:
+                    raise AssertionError('paused HK100 must never be requested')
+                return 'fixture'
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict('os.environ', {'HK100_MONITOR_ENABLED': 'false'}))
+            for name in ['utmb_index', 'zui_cards', 'fuji_items', 'letour_items']:
+                stack.enter_context(patch.object(source_module, name, return_value=[]))
+            stack.enter_context(patch.object(source_module, 'marathon_catalog', return_value=([], {})))
+            members = stack.enter_context(patch.object(source_module, 'wtm_members', return_value=[{'id': 'new-asian', 'asia': True}]))
+            hk = stack.enter_context(patch.object(source_module, 'hk_items', side_effect=AssertionError('must stay paused')))
+            collected = source_module.collect(NOW, Client())
+        hk.assert_not_called()
+        self.assertNotIn('wtm:hk100', collected['sources'])
+        self.assertIn('wtm:hk100', collected['paused_sources'])
+        self.assertEqual(collected['members'], [{'id': 'new-asian', 'asia': True}])
+        self.assertEqual(members.call_args.kwargs['evidence'], source_module.FUJI_WTM_URL)
+        self.assertFalse(any('hk100ultra.com' in url for url in calls))
+
+    def test_hk100_stays_paused_by_default_until_explicitly_reenabled(self):
+        with patch.dict('os.environ', {}, clear=True):
+            self.assertFalse(source_module.hk100_enabled())
+        with patch.dict('os.environ', {'HK100_MONITOR_ENABLED': 'true'}):
+            self.assertTrue(source_module.hk100_enabled())
+
     def test_collector_skips_out_of_scope_utmb_and_both_zuicool_marathon_lists(self):
         events = [dict(tenant=t, title=t, dateBegin="2027-03-01", continent=c, url=f"https://{t}.utmb.world")
                   for t, c in [("asian", "Asia"), ("montblanc", "Europe"), ("unknown", None)]]
@@ -343,6 +372,16 @@ class StoreTests(unittest.TestCase):
         self.assertEqual([e["type"] for e in alerts], ["race_no_new"])
         self.assertIn("检查完成，数据源正常。", alerts[0]["payload"]["message"])
         self.assertIn("brand:kailas", state["paused_sources"])
+
+    def test_pausing_failed_hk100_removes_its_error_without_a_false_recovery(self):
+        previous = {'sources': {'wtm:hk100': {'ok': False, 'error': 'HTTP 403'}},
+                    'known': {'wtm:hk100:2027': {'id': 'wtm:hk100:2027'}}}
+        collected = dict(result(items=[]), paused_sources={'wtm:hk100': {'reason': 'user paused'}})
+        state, events = plan(previous, collected, NOW)
+        self.assertNotIn('wtm:hk100', state['sources'])
+        self.assertIn('wtm:hk100', state['paused_sources'])
+        self.assertIn('wtm:hk100:2027', state['known'])
+        self.assertFalse(any(e['type'] in {'race_source_recovered', 'race_source_degraded'} for e in events))
 
     def test_no_new_receipt_uses_completion_time_and_is_sent_once_per_beijing_day(self):
         store = self.MemoryStore()

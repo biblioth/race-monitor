@@ -45,6 +45,7 @@ jobs:
     env:
       RACE_MONITOR_URL: https://race-monitor.spicyao-lakewatch.workers.dev
       RACE_MONITOR_ADMIN_TOKEN: ${{ secrets.RACE_MONITOR_ADMIN_TOKEN }}
+      HK100_MONITOR_ENABLED: ${{ vars.HK100_MONITOR_ENABLED || 'false' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -65,7 +66,7 @@ jobs:
         env:
           PREVIEW: ${{ inputs.preview }}
       - name: Install isolated browser for the official HK100 fallback
-        if: inputs.network_probe != true && steps.daily_check.outputs.needs_collection == 'true'
+        if: inputs.network_probe != true && steps.daily_check.outputs.needs_collection == 'true' && env.HK100_MONITOR_ENABLED == 'true'
         run: python -m playwright install --with-deps chromium
       - name: Probe restricted public sources without sending notifications
         if: inputs.network_probe == true
@@ -101,7 +102,7 @@ jobs:
       - name: Collect daily discoveries or compensate a missing batch
         if: inputs.network_probe != true && steps.daily_check.outputs.needs_collection == 'true'
         run: |
-          if [ "$RUNNER_OS" = "Linux" ] && [ "$NEEDS_COLLECTION" = "true" ]; then
+          if [ "$RUNNER_OS" = "Linux" ] && [ "$NEEDS_COLLECTION" = "true" ] && [ "$HK100_MONITOR_ENABLED" = "true" ]; then
             xvfb-run -a python -m race_monitor.service ${{ inputs.preview && '--preview' || '' }} ${{ inputs.refresh && '--refresh' || '' }}
           else
             python -m race_monitor.service ${{ inputs.preview && '--preview' || '' }} ${{ inputs.refresh && '--refresh' || '' }}

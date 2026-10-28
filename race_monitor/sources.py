@@ -26,6 +26,7 @@ from .marathons import discover as marathon_catalog, candidates as marathon_cand
 UTMB_URL = "https://utmb.world/en/utmb-world-series-events"
 ZUI_URL = "https://reg.zuicool.com/"
 WTM_URL = "https://hk100ultra.com/world-trail-majors/"
+FUJI_WTM_URL = "https://www.mtfuji100.com/world-trail-majors/"
 DIRECTORY_URL = "https://file.shuzixindong.com/changzheng/84554/fddbe29f6e434035918201d2a17dbcac.pdf"
 SPORT = re.compile(r"越野|跑山|跑步|路跑|马拉松|攀岩|抱石|mountain\s*run|trail\s*run|climb|boulder", re.I)
 REGION = re.compile(r"上海|江苏|浙江|安徽|杭州|南京|苏州|无锡|宁波|绍兴|湖州|莫干山|德清|常州|嘉兴|合肥|黄山|温州|金华|台州|丽水|南通|扬州|镇江|舟山|Shanghai|Jiangsu|Zhejiang|Anhui|Mogan", re.I)
@@ -366,12 +367,19 @@ def wtm_members(html, evidence=WTM_URL):
 
 def member_catalog(client):
     errors = []
-    for url in [WTM_URL, "https://www.mtfuji100.com/world-trail-majors/"]:
+    # Pausing HK100 also stops fetching its member page. Fuji still supplies
+    # the official list for the separately requested new-Asian-member alerts.
+    urls = [WTM_URL, FUJI_WTM_URL] if hk100_enabled() else [FUJI_WTM_URL]
+    for url in urls:
         try:
             return wtm_members(client.get(url), evidence=url)
         except SourceError as e:
             errors.append(str(e))
     raise SourceError("；".join(errors))
+
+
+def hk100_enabled():
+    return os.environ.get("HK100_MONITOR_ENABLED", "false").lower() == "true"
 
 
 def zui_cards(html, allow_empty=False):
@@ -423,8 +431,13 @@ def collect(now, client=None, directory_cache=None):
     for event in index or []:
         if in_scope(dict(event, category="utmb")) and event.get("dateEnd", event["dateBegin"]) >= now.date().isoformat():
             tasks.append((f"utmb:{event['tenant']}", lambda e=event: utmb_event(client, e)))
-    tasks.extend([("wtm:fuji", lambda: fuji_items(client)), ("wtm:hk100", lambda: hk_items(client)),
+    tasks.extend([("wtm:fuji", lambda: fuji_items(client)),
                   ("brand:letour", lambda: letour_items(client, now, run))])
+    paused = {"brand:kailas": {"since": "2026-10-23", "reason": "官网云端405，按用户选择暂用朗途／最酷补漏"}}
+    if hk100_enabled():
+        tasks.append(("wtm:hk100", lambda: hk_items(client)))
+    else:
+        paused["wtm:hk100"] = {"since": "2026-10-28", "reason": "按用户要求暂停港百报名监控；官网云端访问校验403"}
     m = run("wtm:members", lambda: member_catalog(client))
     members.extend(m or [])
     # Annual catalog facts are optional evidence. Daily discovery never waits
@@ -469,5 +482,6 @@ def collect(now, client=None, directory_cache=None):
     brand_stats.update(verified=sum(bool(x["verified"]) for x in brand_checks), pending=sum(not x["verified"] for x in brand_checks),
                        notify_eligible=sum(eligible(x, now) for x in brand_checks), detail_failures=len(brand_cards) - brand_stats["details_read"])
     return {"items": items, "members": members, "sources": reports, "marathon_coverage": marathon_stats, "brand_coverage": brand_stats, "directory_cache": directory_cache, "registry_count": len(registry), "a_class_count": sum(r["category"] == "A" for r in registry),
-            "paused_sources": {"brand:kailas": {"since": "2026-10-23", "reason": "官网云端405，按用户选择暂用朗途／最酷补漏"}},
-            "review_leads": leads, "gaps": ["凯乐石官网暂停采集，暂用朗途／最酷补漏，官网独有活动可能遗漏", "品牌会员小程序、微信群及仅图片发布的招募尚未接入；始祖鸟仅通过最酷补充发现，官网已按用户要求移除", "马拉松发现以最酷列表及分页为主，平台未收录、仅海报信息及待核验A类条目可能漏检或延迟", "WTM总站受限时使用港百／环富士山官方成员清单，成员同步可能延迟"]}
+            "paused_sources": paused,
+            "review_leads": leads, "gaps": ["凯乐石官网暂停采集，暂用朗途／最酷补漏，官网独有活动可能遗漏", "品牌会员小程序、微信群及仅图片发布的招募尚未接入；始祖鸟仅通过最酷补充发现，官网已按用户要求移除", "马拉松发现以最酷列表及分页为主，平台未收录、仅海报信息及待核验A类条目可能漏检或延迟", "WTM新增亚洲成员通过环富士山官方成员清单发现，成员同步可能延迟"]
+                    + ([] if hk100_enabled() else ["港百报名监控已按用户要求暂停，不检查其官网、报名页或成员页；环富士山及WTM新增亚洲站提醒继续保留"])}
