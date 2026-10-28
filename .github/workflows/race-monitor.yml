@@ -117,13 +117,11 @@ jobs:
           path: .state/race-report.json
           if-no-files-found: ignore
           retention-days: 30
-      - name: Notify both Feishu robots if the job fails
+      - name: Notify the configured Feishu robot if the job fails
         if: failure() && inputs.preview != true && inputs.network_probe != true
         run: |
           python -m race_monitor.service --failure-notify
         env:
-          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
-          FEISHU_WEBHOOK_SECRET: ${{ secrets.FEISHU_WEBHOOK_SECRET }}
           FEISHU_ALERTS_WEBHOOK_URL: ${{ secrets.FEISHU_ALERTS_WEBHOOK_URL }}
           FEISHU_ALERTS_WEBHOOK_SECRET: ${{ secrets.FEISHU_ALERTS_WEBHOOK_SECRET }}
           GITHUB_RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

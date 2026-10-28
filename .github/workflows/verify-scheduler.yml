@@ -36,7 +36,7 @@ jobs:
           status, health = call('/races/health')
           assert status == 200, f'Health HTTP {status}'
           assert health['scheduler']['enabled'] and health['scheduler']['configured']
-          assert set(health['channels']) == {'feishu', 'feishu:alerts'}
+          assert health['channels'] == ['feishu:alerts']
           assert health['pendingNotifications'] == 0
           assert call('/races/scheduler/dispatch', 'POST')[0] == 401
           status, result = call('/races/scheduler/dispatch', 'POST', True)

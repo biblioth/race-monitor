@@ -205,3 +205,21 @@ test("a no-new daily receipt reaches both robots once through the existing trans
     assert.deepEqual(posts, [e.FEISHU_WEBHOOK_URL, e.FEISHU_ALERTS_WEBHOOK_URL]);
   } finally { globalThis.fetch = previousFetch; }
 });
+
+test("removing the original bot leaves daily receipts and discoveries addressed only to the remaining bot", async () => {
+  const e = env();
+  delete e.FEISHU_WEBHOOK_URL;
+  e.FEISHU_ALERTS_WEBHOOK_URL = "https://example.com/remaining";
+  const receipt = { key: "races:no-new:20261028", type: "race_no_new", payload: { message: "今日无新增" } };
+  await commitRaceState(e, { version: 0, state: { last_completed_at: new Date().toISOString() }, events: [event, receipt] });
+  const rows = (await e.DB.prepare("SELECT id,channel FROM monitor_deliveries ORDER BY id").all()).results;
+  assert.deepEqual(rows.map(r => r.channel), ["feishu:alerts", "feishu:alerts"]);
+  const health = await (await raceHealthResponse(e)).json();
+  assert.deepEqual(health.channels, ["feishu:alerts"]);
+  const previousFetch = globalThis.fetch; const calls = [];
+  globalThis.fetch = async url => { calls.push(url); return Response.json({ code: 0 }); };
+  try {
+    await worker.queue({ messages: rows.map(row => ({ body: { deliveryId: row.id }, ack() {}, retry() { assert.fail("must succeed"); } })) }, e);
+    assert.deepEqual(calls, [e.FEISHU_ALERTS_WEBHOOK_URL, e.FEISHU_ALERTS_WEBHOOK_URL]);
+  } finally { globalThis.fetch = previousFetch; }
+});

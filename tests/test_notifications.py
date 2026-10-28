@@ -31,3 +31,12 @@ class FailureNotificationTests(unittest.TestCase):
         with patch.dict('os.environ', env, clear=True), patch('race_monitor.service.requests.post', return_value=response) as post:
             notify_failure()
         self.assertEqual(post.call_count, 1)
+
+    def test_alerts_robot_alone_receives_failure_notice_after_original_bot_removal(self):
+        env = {'FEISHU_ALERTS_WEBHOOK_URL': 'https://example.com/new', 'FEISHU_ALERTS_WEBHOOK_SECRET': 'new-secret'}
+        response = Mock();response.json.return_value = {'code': 0}
+        with patch.dict('os.environ', env, clear=True), patch('race_monitor.service.requests.post', return_value=response) as post:
+            notify_failure()
+        post.assert_called_once()
+        self.assertEqual(post.call_args.args[0], env['FEISHU_ALERTS_WEBHOOK_URL'])
+        self.assertIn('sign', post.call_args.kwargs['json'])
