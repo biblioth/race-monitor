@@ -120,6 +120,8 @@ def status(text):
         return "sold_out"
     if re.search(r"报名中|点此报名|立即报名|一键报名", text):
         return "open"
+    if re.search(r"尚未开始|未开始", text):
+        return "preview"
     if re.search(r"报名预告|即将报名|即将开放|开启报名|开放报名|报名时间", text):
         return "announced"
     return "unknown"
@@ -224,13 +226,20 @@ def parse_detail(html, url):
     heading = root.select_one("h4" if is_reg else "h1") if root else None
     if not root or not heading:
         raise ValueError("最酷当届详情缺少独立标题／正文，可能为登录或验证页")
-    name = clean(re.sub(r"报名中|已截止|已关闭|已结束|已满", "", heading.get_text(" ", strip=True)))
+    title = dom(str(heading))
+    # Registration badges are metadata, even when the platform adds a new state.
+    # Keep the original heading intact for status extraction below.
+    for label in title.select(".label"):
+        label.decompose()
+    name = clean(re.sub(r"报名中|已截止|已关闭|已结束|已满", "", title.get_text(" ", strip=True)))
     year = re.search(r"20\d{2}", name)
     if not year:
         raise ValueError("最酷详情无法确认当届年份")
     if is_reg:
         text = root.get_text("\n", strip=True)
-        place = re.search(r"赛事地点[：:]\s*(.*?)\s*报名截止时间", text, re.S)
+        # Preview pages show a signup start instead of a signup deadline. The
+        # location ends at its own line, not at a particular registration field.
+        place = re.search(r"赛事地点[：:][^\S\n]*([^\n]*)", text)
         date_field = re.search(r"赛事日期[：:]\s*(.*?)\s*赛事地点", text, re.S)
         date_header = clean(date_field[1]) if date_field else ""
         description = root.select_one('.reg_race-description')

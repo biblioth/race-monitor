@@ -137,6 +137,36 @@ class ZuicoolBrandTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             inspect(Client({source['url']: detail('2027FUGA训练赛·杭州西山越野赛', date='2027年11月15日')}), source)
 
+    def test_real_preview_badge_and_start_time_do_not_break_identity_or_location(self):
+        name = '2026 FUGA训练赛·杭州如意尖越野赛（杭州站年度总赛）'
+        source = zui_cards(listing(name, BASE+'77654').replace('报名中', '尚未开始').replace('2026年11月15日星期日', '2026年12月20日星期日'))[0]
+        self.assertEqual(source['status'], 'preview')
+        html = f'''<div id="angReg_viewRace"><h4>{name}
+        <span class="label label-default">尚未开始</span></h4>
+        <p>赛事日期：2026年12月20日星期日<br>
+        赛事地点：浙江・杭州市西湖区・灵山景区森灵度假酒店</p>
+        <p>报名开始时间：2026年12月1日 00:00:00</p>
+        <p>官方公众号：天逐体育；咨询邮箱：contact@example.com</p>
+        <h5>西山之巅23公里组</h5></div>'''
+        client = Client({source['url']: html})
+        item = inspect(client, source)[0]
+        self.assertEqual(item['name'], name)
+        self.assertEqual(item['status'], 'preview')
+        self.assertEqual(item['date'], '2026-12-20')
+        self.assertEqual(item['location'], '浙江・杭州市西湖区・灵山景区森灵度假酒店')
+        self.assertIsNone(item['closes'])
+        self.assertTrue(item['verified'])
+        self.assertTrue(item['in_region'])
+        state = {}
+        self.assertEqual(len(merge_discoveries(state, [item], NOW)), 1)
+        self.assertEqual(merge_discoveries(state, [dict(item, status='open')], NOW + timedelta(days=1)), [])
+        client.pages[source['url']] = html.replace('浙江・杭州市西湖区・灵山景区森灵度假酒店', '')
+        with self.assertRaisesRegex(ValueError, '缺少活动日期或地点'):
+            inspect(client, source)
+        client.pages[source['url']] = html.replace('杭州如意尖', '南京紫金山')
+        with self.assertRaisesRegex(ValueError, '标题与列表不一致'):
+            inspect(client, source)
+
     def test_outside_region_and_expired_lists_do_not_fetch_details(self):
         client = Client(lambda url: search(parse_qs(urlsplit(url).query)['q'][0]))
         found, _ = discover(client, [card(location='广东・东莞'), card(date='2026-01-01'), card(status='closed')], NOW, reader({}), zui_cards)

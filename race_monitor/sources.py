@@ -401,7 +401,7 @@ def zui_cards(html, allow_empty=False):
         cards.append({"name": title, "url": urljoin(ZUI_URL, a["href"]), "text": text, "date": dates[0] if dates else None,
                       "date_end": dates[-1] if dates else None,
                       "location": location,
-                      "status": {"报名中": "open", "已截止": "closed", "已关闭": "closed", "已满": "sold_out", "报名预告": "preview", "即将报名": "preview"}.get(tag.get_text(strip=True) if tag else "", "unknown")})
+                      "status": {"报名中": "open", "已截止": "closed", "已关闭": "closed", "已满": "sold_out", "报名预告": "preview", "即将报名": "preview", "尚未开始": "preview", "未开始": "preview"}.get(tag.get_text(strip=True) if tag else "", "unknown")})
     if not cards and allow_empty and s.select_one("#angReg_frontpage") and s.select_one("input[name=q]") and "抱歉，暂时没有相关赛事可以报名" in s.get_text():
         return []
     if not cards or not any(c["date"] and c["location"] for c in cards):

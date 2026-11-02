@@ -93,6 +93,15 @@ class MarathonTests(unittest.TestCase):
         self.assertIn("平台转载", item["certification"])
         self.assertIn("来源：最酷", item_text(item))
 
+    def test_registration_badges_do_not_pollute_the_title_and_unknown_states_stay_unknown(self):
+        for label, expected in [('尚未开始', 'preview'), ('未开始', 'preview'), ('报名中', 'open'), ('已截止', 'closed'), ('待审核', 'unknown')]:
+            with self.subTest(label=label):
+                html = reg_html(label=label).replace(f'<span>{label}</span>', f'<span class="label">{label}</span>')
+                parsed = parse_detail(html, card()['url'])
+                self.assertEqual(parsed['name'], card()['name'])
+                self.assertEqual(parsed['status'], expected)
+                self.assertEqual(parsed['location'], card()['location'])
+
     def test_application_and_previous_edition_claims_are_not_confirmed(self):
         for text in ["拟申报中国田协A1类认证", "中国田协A类认证中", "尚未取得A类认证", "2026年中国田协A类认证赛事"]:
             item = inspect(Client({card()["url"]: reg_html(text)}), card(), [], self.reader({}))[0]
