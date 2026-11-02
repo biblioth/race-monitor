@@ -49,7 +49,6 @@ def plan(state, result, now):
     good = sum(bool(s["ok"]) for s in current.values())
     events = digest_events(fresh, now, f"{good}/{len(current)}")
     events += member_events(state, result["members"], now)
-    has_discoveries = bool(events)
     failed = {k: v for k, v in current.items() if not v["ok"]}
     # A removed/paused source is a coverage gap, never a successful recovery.
     old_failed = {k for k, v in previous_sources.items() if not v["ok"] and k in current}
@@ -68,16 +67,8 @@ def plan(state, result, now):
     elif not failed and old_failed:
         events.append({"key": f"races:recovered:{now:%Y%m%d}", "type": "race_source_recovered",
                        "payload": {"message": f"✅ 赛事监控已启用来源恢复正常\n核验时间：{now:%Y-%m-%d %H:%M}（北京时间）\n本轮 {good}/{len(current)} 个已启用来源读取成功；暂停来源及未接入渠道的覆盖缺口仍保留。"}})
-    # A daily receipt shares the collector's atomic state/outbox commit. Manual
-    # refreshes and scheduled compensation must not send another empty receipt.
-    date = now.date().isoformat()
-    if has_discoveries:
-        state["daily_notification"] = {"date": date, "kind": "new"}
-    elif (state.get("daily_notification") or {}).get("date") != date:
-        outcome = "部分来源异常，详见告警。" if failed else "检查完成，数据源正常。"
-        events.append({"key": f"races:no-new:{now:%Y%m%d}", "type": "race_no_new",
-                       "payload": {"message": f"🏃 赛事监控｜今日无新增\n{now:%Y-%m-%d %H:%M}（北京时间）\n{outcome}"}})
-        state["daily_notification"] = {"date": date, "kind": "no_new"}
+    # Quiet days still commit completion and source health so the scheduler can
+    # distinguish a successful check from a missed run, without an empty message.
     state.update(sources=current, last_completed_at=now.isoformat(), last_run_date=now.date().isoformat(), run=None,
                  directory_cache=result.get("directory_cache", state.get("directory_cache", {})),
                  paused_sources=result.get("paused_sources", {}),
@@ -107,7 +98,7 @@ def execute(store, now, collector=collect, refresh=False, clock=None):
     result = collector(now, directory_cache=state.get("directory_cache", {}))
     if not any(v["ok"] for v in result["sources"].values()):
         raise RuntimeError("全部来源读取失败；未更新活动基线")
-    # Production supplies the clock after collection, so receipts and freshness
+    # Production supplies the clock after collection, so messages and freshness
     # describe actual completion rather than the start of a potentially long scan.
     completed_at = clock() if clock else now
     state, events = plan(state, result, completed_at)
